@@ -34,7 +34,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * Publication captures a consistent snapshot; an already-started operation
  * cannot acquire a later endpoint's key. No file configuration source exists. */
 export function installCustomProviderSource(readAuth = customAuthState): void {
-	let fingerprint: string | undefined;
+	// Per collection: platform mode keeps one pi-ai collection per account.
+	const fingerprints = new WeakMap<object, string>();
 	configureProviderSource({
 		isCustom: (id) => id === CUSTOM_PROVIDER.id,
 		sync(models) {
@@ -45,10 +46,10 @@ export function installCustomProviderSource(readAuth = customAuthState): void {
 			const key = auth.key;
 			const ready = customProviderUsable(cp) && auth.readable && customBindingMatches(cp, auth.binding) && (cp.authMode === "keyless" || customKeyAuthorized(cp, auth));
 			const next = JSON.stringify([cp, auth]); // Private in-memory fingerprint, never a public revision.
-			if (next === fingerprint) return;
+			if (next === fingerprints.get(models)) return;
 			if (ready) models.setProvider(buildOpenAiCompatibleProvider({ ...cp, baseUrl: cp.baseUrl, models: cp.models ?? [], apiKey: key }));
 			else models.deleteProvider(CUSTOM_PROVIDER.id);
-			fingerprint = next;
+			fingerprints.set(models, next);
 		},
 	});
 }

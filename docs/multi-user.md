@@ -1,8 +1,8 @@
 # Multi-user platform (branch `feat/multi-user`)
 
 Turn one LearnHarness deployment into a small platform: several people,
-each with their **own private sessions, notes, knowledge graph and
-settings**, all using the owner's API keys.
+each with their **own private sessions, notes, knowledge graph, settings
+and API keys**. Nobody runs on anyone else's credentials.
 
 It is **off unless `LH_MULTI_USER=1`**. Without it the app is the
 single-user app, byte-for-byte; the full test suite runs in that mode.
@@ -11,8 +11,8 @@ single-user app, byte-for-byte; the full test suite runs in that mode.
 
 | Who | What they do |
 |---|---|
-| **Owner** (the first account) | Opens `/signup`, picks a username + password, enters the **owner setup code**. Manages API keys/providers (Settings → Providers), creates invites, and disables or deletes accounts (`/admin`). |
-| **Member** | Gets an invite link from the owner (`/signup?invite=CODE`, with the code already filled in), picks a username + password, and starts learning. Signs in later at `/login` with username + password. |
+| **Owner** (the first account) | Opens `/signup`, picks a username + password, enters the **owner setup code**. Adds their own API keys (Settings → Providers), creates invites, and disables or deletes accounts (`/admin`). |
+| **Member** | Gets an invite link from the owner (`/signup?invite=CODE`, with the code already filled in), picks a username + password, then adds **their own** API key in Settings → Providers and picks models, the same first-run setup as a fresh install. Signs in later at `/login` with username + password. |
 
 - Sign-in is **username + password**. Usernames are 3–32 characters
   (letters, numbers, dot, dash, underscore) and case-insensitive.
@@ -26,11 +26,24 @@ single-user app, byte-for-byte; the full test suite runs in that mode.
   `POST /api/admin/invites {"code":"EARLY-ACCESS-2026","maxUses":25,"days":60}`.
 - The owner can instead allow open sign-ups (Admin → Sign-ups), so no
   invite is needed.
-- Members start with the owner's model choices, and can pick their own
-  under Settings → Agent. That changes only their copy.
-- Members see "Providers and API keys are managed by the platform owner"
-  instead of the key controls. Every account's usage runs on the owner's
-  keys and counts against the owner's provider limits.
+- **Everyone uses only their own credentials.** Each account saves its own
+  API keys and custom endpoint in Settings → Providers. Usage counts against
+  that person's own provider account.
+  - Keys are never placed in the server's shared environment. Every model
+    request looks up the key of the account that sent it.
+  - Keys set on the deployment itself (e.g. `NVIDIA_API_KEY` in Vercel's
+    environment variables) are **ignored** in platform mode, because they
+    would be shared by everyone.
+  - Background work that runs for no particular account gets no keys at all.
+    It never borrows the owner's.
+- **Owner-only: the server machine's own logins.** Subscription logins
+  (ChatGPT Plus and similar; the app supports one connected login per
+  server), the Claude Code CLI, and AWS/gcloud credential files on the
+  server belong to whoever runs the server. Only the owner can use them.
+  Members see a short note there and use an API key instead.
+- New members start with default settings (no models chosen), not the
+  owner's. The owner's model choices and custom endpoint would point them
+  at providers they have no key for.
 
 ## Settings (Vercel → Project → Environment Variables)
 
@@ -49,7 +62,8 @@ Everything else is the same as `docs/convex-vercel.md`.
 | Owner's sessions, graph, settings, prompts, jobs | the original data (`data/…` in Convex), so turning the platform on keeps all existing data as the owner's |
 | A member's sessions, graph, settings, prompts, jobs | `users/<id>/…` in Convex; nobody else can read it |
 | Accounts, invites, platform options | `platform/…` in Convex |
-| API keys (`auth.json`) | shared: the owner's, for everyone |
+| Owner's API keys | the original `auth.json` |
+| A member's API keys | `users/<id>/auth/auth.json` in Convex; only that member's requests read it |
 
 Live updates (the events stream), the activity dock and background
 extraction runs are also per user: nobody sees or can cancel another

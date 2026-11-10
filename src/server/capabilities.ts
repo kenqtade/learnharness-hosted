@@ -21,7 +21,7 @@ import {
 } from "../core/capabilities/providers.ts";
 import type { CapabilityKind, CapabilityState } from "../core/capabilities/types.ts";
 import { resolveCapability } from "../core/capabilities/resolve.ts";
-import { initAuthEnv, providerKeyPresent } from "./keys.ts";
+import { credentialEnvSnapshot, initAuthEnv, providerKeyPresent } from "./keys.ts";
 import { effectiveSettings } from "./stores.ts";
 
 /** Candidate Chrome locations the headless sub-agent already knows about. */
@@ -60,7 +60,8 @@ function resolverEnvironment(picked: string | null): ResolverEnvironment {
 	initAuthEnv();
 	const candidates = new Set([...Object.keys(LLM_KEY_PROVIDERS), ...(picked ? [picked] : [])]);
 	return {
-		env: process.env as Record<string, string | undefined>,
+		// The current account's keys only (platform mode never shares env keys).
+		env: credentialEnvSnapshot(),
 		binaries: chromePresent() ? ["chrome"] : [],
 		endpointsUp: [],
 		secureContext: process.env.LH_SECURE_CONTEXT === "1",

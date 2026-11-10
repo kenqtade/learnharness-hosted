@@ -367,22 +367,20 @@ function AddProviderRow({
 	);
 }
 
-/** PLATFORM MODE (multi-user branch): providers, keys, subscriptions and
- *  CLIs are platform-wide and owner-managed (the server refuses member
- *  writes: routeAccess). Members see one plain notice instead of controls
- *  that would only fail; the owner and single-user installs see the full
- *  section, unchanged. */
+/** PLATFORM MODE (multi-user branch): every account manages its OWN API
+ *  keys and custom endpoint here — nothing is shared. Only the server
+ *  machine's own logins (subscriptions, the Claude Code CLI) stay with the
+ *  owner, so members see a short note in place of those two groups. */
 export function KeysSection(props: { initialRow?: string }) {
-	const me = useMe();
-	if (me?.multiUser && me.user?.role === "member") {
-		return (
-			<p className="text-sm text-muted-foreground" data-testid="keys-managed-by-owner">
-				Providers and API keys are managed by the platform owner and shared by every account. You can still choose which
-				models to use under Agent.
-			</p>
-		);
-	}
 	return <ProviderKeysSection {...props} />;
+}
+
+function OwnerOnlyNote({ what }: { what: string }) {
+	return (
+		<p className="px-1 py-1.5 text-sm text-muted-foreground" data-testid="owner-only-login">
+			{what} uses the server's own login, so on a shared platform only the owner can connect it. Add your own API key above instead.
+		</p>
+	);
 }
 
 function ProviderKeysSection({
@@ -394,6 +392,8 @@ function ProviderKeysSection({
 }: {
 	initialRow?: string;
 }) {
+	const me = useMe();
+	const member = me?.multiUser === true && me.user?.role === "member";
 	const [statuses, setStatuses] = useState<AuthKeyStatus[] | null>(null);
 	const [providers, setProviders] = useState<ProviderKeyInfo[] | undefined>(undefined);
 	const [loading, setLoading] = useState(true);
@@ -591,11 +591,11 @@ function ProviderKeysSection({
 			</SettingsGroup>
 
 			<SettingsGroup label="Subscriptions" testid="group-subscriptions">
-				<SubscriptionConnections />
+				{member ? <OwnerOnlyNote what="A subscription login" /> : <SubscriptionConnections />}
 			</SettingsGroup>
 
 			<SettingsGroup label="External CLI" testid="group-external-cli">
-				<ClaudeCodeInstallationStatus />
+				{member ? <OwnerOnlyNote what="Claude Code" /> : <ClaudeCodeInstallationStatus />}
 			</SettingsGroup>
 
 			{(["Dictation", "Search"] as const).map((label) => <SettingsGroup key={label} label={label} testid={label === "Dictation" ? "group-dictation" : "group-search"}>

@@ -381,16 +381,16 @@ export function clearSessionCookie(secure: boolean): string {
 
 export type Access = "public" | "user" | "owner";
 
-/** Who may call an API route in platform mode. Keys, provider wiring and
- *  subscriptions are platform-wide (the owner's); everything else is the
- *  caller's own data space. */
+/** Who may call an API route in platform mode. Every account manages its
+ *  OWN API keys and custom endpoint (owner ruling 2026-11-10: nobody runs
+ *  on someone else's credentials), so those are ordinary user routes. Only
+ *  the server machine's own logins stay with the owner: subscription
+ *  connections (one per server process) and the Claude Code CLI. */
 export function routeAccess(method: string, pathname: string): Access {
-	const m = method.toUpperCase();
 	const p = pathname.replace(/\/+$/, "") || "/";
+	void method;
 	if (p.startsWith("/api/auth/")) return "public";
 	if (p.startsWith("/api/admin")) return "owner";
-	if (p.startsWith("/api/keys/") && m !== "GET") return "owner";
-	if (p === "/api/custom-provider" && m !== "GET") return "owner";
 	if (p.startsWith("/api/subscriptions") || p === "/api/claude-code") return "owner";
 	return "user";
 }

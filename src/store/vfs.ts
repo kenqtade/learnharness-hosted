@@ -65,17 +65,34 @@ interface Target {
 	inherit?: { key: string | null; real: string };
 }
 
-/** Files a member reads from the owner's space until they save their own:
- *  the settings record (model slots, agent knobs, appearance). Keys are
- *  platform-wide, so without this a new member starts with no models
- *  chosen and cannot chat until they find the Agent settings. */
-const INHERITED = new Set(["settings.json"]);
+/** Files a member reads from the owner's space until they save their own.
+ *  EMPTY on purpose (owner ruling 2026-11-10): every account brings its own
+ *  credentials, so the owner's model choices and custom endpoint would only
+ *  point a member at providers they hold no key for. A new member gets the
+ *  same first-run setup as a fresh install. (The mechanism stays for
+ *  harmless shared defaults, should any ever be wanted.) */
+const INHERITED = new Set<string>();
+
+/** Real-fs home of a member's private credentials (their auth file and
+ *  subscription logins). Exported for the subscription owner, whose
+ *  libraries write their own files. */
+export function memberAuthDir(userId: string): string {
+	if (!safeUserId(userId)) throw new Error("vfs: invalid user id");
+	return path.join(USERS_ROOT, userId, "auth");
+}
 
 /** Where a path really lives for the CURRENT user (see user-scope.ts). */
 function target(p: string): Target {
 	const abs = path.resolve(String(p));
-	// provider keys are platform-wide: the owner's, for every account
-	if (abs === AUTH_ABS) return { key: legacyKey(abs), real: abs, scoped: false };
+	// CREDENTIALS ARE PER ACCOUNT (owner ruling 2026-11-10): each member's
+	// API keys live in their own space; the owner keeps the original auth
+	// file. The atomic-write temp file follows its auth file.
+	if (abs === AUTH_ABS || (path.dirname(abs) === AUTH_DIR && path.basename(abs).startsWith(".auth.json.tmp-"))) {
+		const space = dataSpaceOf(currentUser());
+		if (space === null) return { key: legacyKey(abs), real: abs, scoped: false };
+		const name = path.basename(abs);
+		return { key: `users/${space}/auth/${name}`, real: path.join(memberAuthDir(space), name), scoped: true };
+	}
 	const prel = path.relative(PLATFORM_ROOT, abs);
 	if (inside(prel)) return { key: prel === "" ? "platform" : `platform/${posix(prel)}`, real: abs, scoped: false };
 	const rel = path.relative(DATA_ROOT, abs);

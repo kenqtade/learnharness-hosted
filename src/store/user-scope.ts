@@ -13,8 +13,12 @@
  *
  * - The OWNER keeps the original (legacy) data space, so a single-user
  *   install that turns the platform on keeps all of its data.
- * - Provider API keys (the auth file) stay platform-wide: they belong to
- *   the owner and power every account.
+ * - CREDENTIALS ARE PER ACCOUNT (owner ruling 2026-11-10): each account
+ *   has its own auth file (API keys, custom endpoint key) in its own space,
+ *   keys are never mirrored into the shared process env, deployment env
+ *   keys are ignored, and work outside any account scope holds no keys.
+ *   Only the server machine's own logins (subscriptions, Claude Code CLI,
+ *   AWS/gcloud files) stay with the owner.
  * - Without LH_MULTI_USER nothing here is ever consulted.
  */
 import { AsyncLocalStorage } from "node:async_hooks";

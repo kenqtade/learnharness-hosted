@@ -157,16 +157,16 @@ test("each member has a private data space; the owner keeps the original data", 
 	assert.ok(chatStore.listChats().some((c) => c.id === ownerChat.id));
 });
 
-test("members inherit the owner's settings until they save their own", async () => {
+test("members start with their OWN settings — nothing is inherited from the owner", async () => {
 	const { settingsStore } = await import("../src/store/settings.ts");
 	const { SETTINGS_FILE } = await import("../config.ts");
 	as(owner, () => fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ version: 1, agent: { marker: "owner" } })));
 	const vfs = (await import("../src/store/vfs.ts")).default;
-	assert.match(as(alice, () => vfs.readFileSync(SETTINGS_FILE, "utf-8")), /owner/, "inherited");
+	assert.equal(as(alice, () => vfs.existsSync(SETTINGS_FILE)), false, "a new member gets the first-run setup, not the owner's models/endpoint");
 	as(alice, () => vfs.writeFileSync(SETTINGS_FILE, JSON.stringify({ version: 1, agent: { marker: "alice" } })));
 	assert.match(as(alice, () => vfs.readFileSync(SETTINGS_FILE, "utf-8")), /alice/, "own copy wins");
 	assert.match(as(owner, () => vfs.readFileSync(SETTINGS_FILE, "utf-8")), /owner/, "the owner's copy is untouched");
-	assert.match(as(bob, () => vfs.readFileSync(SETTINGS_FILE, "utf-8")), /owner/);
+	assert.equal(as(bob, () => vfs.existsSync(SETTINGS_FILE)), false);
 	assert.ok(settingsStore);
 });
 
@@ -205,10 +205,10 @@ test("route access policy", () => {
 		["GET", "/api/chats", "user"],
 		["POST", "/api/chat", "user"],
 		["GET", "/api/keys", "user"],
-		["PUT", "/api/keys/nvidia", "owner"],
-		["DELETE", "/api/keys/nvidia", "owner"],
+		["PUT", "/api/keys/nvidia", "user"],
+		["DELETE", "/api/keys/nvidia", "user"],
 		["GET", "/api/custom-provider", "user"],
-		["POST", "/api/custom-provider", "owner"],
+		["POST", "/api/custom-provider", "user"],
 		["GET", "/api/subscriptions", "owner"],
 		["GET", "/api/claude-code", "owner"],
 		["GET", "/api/admin/users", "owner"],
@@ -228,10 +228,11 @@ test("withStore: 401 signed out, 403 member on owner routes, handler runs as the
 	assert.equal((await handler(req("GET", "/api/chats"))).status, 401);
 	const mine = await (await handler(req("GET", "/api/chats", bob))).json();
 	assert.deepEqual(mine, ["bob chat"]);
-	const keys = withStore(async (_r: Request) => Response.json({ ok: true }));
-	assert.equal((await keys(req("PUT", "/api/keys/nvidia", bob))).status, 403);
-	assert.equal((await keys(req("PUT", "/api/keys/nvidia", owner))).status, 200);
-	assert.equal((await keys(req("POST", "/api/auth/login"))).status, 200, "auth routes are public");
+	const ownerRoute = withStore(async (_r: Request) => Response.json({ ok: true }));
+	assert.equal((await ownerRoute(req("GET", "/api/admin/users", bob))).status, 403);
+	assert.equal((await ownerRoute(req("GET", "/api/admin/users", owner))).status, 200);
+	assert.equal((await ownerRoute(req("PUT", "/api/keys/nvidia", bob))).status, 200, "members manage their own keys");
+	assert.equal((await ownerRoute(req("POST", "/api/auth/login"))).status, 200, "auth routes are public");
 });
 
 test("server pages: a valid cookie binds the user, anything else must sign in", () => {
@@ -294,4 +295,60 @@ test("a memorable shareable invite: owner-chosen code, several uses, any letter 
 	assert.equal(single.maxUses, undefined, "1 use = classic single-use invite");
 	assert.ok(accounts.revokeInvite("EARLY-ACCESS-TEST") && accounts.revokeInvite("JUST-ONE"));
 	for (const u of [e1, e2]) accounts.deleteAccount(u.id);
+});
+
+// ─── credentials: every account uses ONLY its own ─────────────────────────
+
+test("API keys are per account: private files, never in the shared env, never borrowed", async () => {
+	const keys = await import("../src/server/keys.ts");
+	const { credentialFor, piModels } = await import("../src/agent/models.ts");
+	const { AUTH_FILE } = await import("../config.ts");
+	process.env.NVIDIA_API_KEY = "nvapi-DEPLOYMENT-ENV-KEY-must-be-ignored";
+	keys.initAuthEnv();
+	assert.equal(process.env.NVIDIA_API_KEY, undefined, "a deployment env key would be shared by everyone: removed");
+
+	const save = (who: Account, value: string) => as(who, () => keys.saveKey("NVIDIA_API_KEY", value));
+	assert.ok(save(owner, "nvapi-OWNER-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").ok);
+	assert.ok(save(alice, "nvapi-ALICE-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").ok);
+	assert.equal(process.env.NVIDIA_API_KEY, undefined, "saving never mirrors into process.env");
+
+	assert.match(as(owner, () => keys.keyValue("NVIDIA_API_KEY"))!, /OWNER/);
+	assert.match(as(alice, () => keys.keyValue("NVIDIA_API_KEY"))!, /ALICE/);
+	assert.equal(as(bob, () => keys.keyValue("NVIDIA_API_KEY")), undefined, "bob has no key — he does NOT get the owner's");
+	assert.equal(keys.keyValue("NVIDIA_API_KEY"), undefined, "work outside any account holds no keys");
+	assert.equal(as(bob, () => keys.providerKeyPresent("nvidia")), false);
+	assert.equal(as(alice, () => keys.providerKeyPresent("nvidia")), true);
+
+	// what pi-ai sees at request time (its auth context)
+	assert.match(as(alice, () => credentialFor("NVIDIA_API_KEY"))!, /ALICE/);
+	assert.equal(as(bob, () => credentialFor("NVIDIA_API_KEY")), undefined);
+	const aliceModels = as(alice, () => piModels());
+	assert.notEqual(aliceModels, as(bob, () => piModels()), "one model collection per account");
+	assert.equal(aliceModels, as(alice, () => piModels()));
+	// pi-ai's OWN auth resolution, as a real model request would run it
+	assert.ok(await as(alice, () => piModels().checkAuth("nvidia")), "alice's request resolves alice's key");
+	assert.equal(await as(bob, () => piModels().checkAuth("nvidia")), undefined, "bob's request finds no key at all");
+	assert.ok(await as(owner, () => piModels().checkAuth("nvidia")));
+
+	// on disk: the owner keeps the original file, a member's is in their own space
+	assert.match(fs.readFileSync(AUTH_FILE, "utf-8"), /OWNER/);
+	assert.doesNotMatch(fs.readFileSync(AUTH_FILE, "utf-8"), /ALICE/);
+	assert.match(fs.readFileSync(path.join(`${DATA}-users`, alice.id, "auth", path.basename(AUTH_FILE)), "utf-8"), /ALICE/);
+	assert.deepEqual(as(bob, () => keys.keyStatuses().filter((k) => k.present).map((k) => k.id)), [], "bob's Keys page shows none of anyone else's");
+
+	// deleting is per account too
+	as(alice, () => keys.deleteKey("NVIDIA_API_KEY"));
+	assert.equal(as(alice, () => keys.keyValue("NVIDIA_API_KEY")), undefined);
+	assert.match(as(owner, () => keys.keyValue("NVIDIA_API_KEY"))!, /OWNER/);
+	as(owner, () => keys.deleteKey("NVIDIA_API_KEY"));
+});
+
+test("the server machine's own logins (subscriptions, Claude Code) are never lent to members", async () => {
+	const keys = await import("../src/server/keys.ts");
+	assert.equal(as(alice, () => keys.providerKeyPresent("claude-code")), false);
+	assert.equal(as(alice, () => keys.providerKeyPresent("chatgpt")), false);
+	assert.equal(accounts.routeAccess("POST", "/api/subscriptions/chatgpt"), "owner");
+	assert.equal(accounts.routeAccess("PUT", "/api/claude-code"), "owner");
+	const { webSubscriptionRequest } = await import("../src/server/web-subscriptions.ts");
+	await assert.rejects(as(alice, () => webSubscriptionRequest("lh:chatgpt", "lease", { background: false })), /belong to the platform owner/);
 });

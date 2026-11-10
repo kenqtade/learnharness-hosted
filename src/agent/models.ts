@@ -53,7 +53,37 @@ export interface PiEngine {
 
 export type { ThinkingLevel };
 
-let collection: ReturnType<typeof createModels> | undefined;
+type Collection = ReturnType<typeof createModels>;
+/** One pi-ai collection per credential scope (see configureModelsScope).
+ *  Single-user installs only ever use "default". */
+const collections = new Map<string, Collection>();
+const MAX_COLLECTIONS = 200;
+let scopeKey: () => string = () => "default";
+/** How pi-ai reads a credential env var — injected by the server keys seam
+ *  (the agent layer never imports stores). Default: the process env. */
+let authEnv: (name: string) => string | undefined = (name) => process.env[name];
+
+/** PLATFORM MODE seam: the server supplies the credential lookup, which
+ *  reads the REQUESTING account's own keys (never a shared env). */
+export function configureAuthEnv(fn: (name: string) => string | undefined, opts: { ambientAllowed?: () => boolean } = {}): void {
+	authEnv = fn;
+	ambientAllowed = opts.ambientAllowed ?? (() => true);
+}
+/** Machine-level credential files (AWS profile, gcloud ADC) belong to
+ *  whoever runs the server; platform mode lets only the owner use them. */
+let ambientAllowed: () => boolean = () => true;
+/** PLATFORM MODE seam: which collection serves the current request. Each
+ *  account gets its own collection, so per-account provider wiring (a
+ *  custom endpoint and its key) can never leak into another account's
+ *  request, even while both are in flight. */
+export function configureModelsScope(fn: () => string): void {
+	scopeKey = fn;
+}
+/** A credential env var as the CURRENT request should see it. */
+export function credentialFor(name: string): string | undefined {
+	const value = authEnv(name);
+	return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
 interface ProviderSource {
 	sync(models: MutableModels): void;
 	isCustom(id: string): boolean;
@@ -64,9 +94,11 @@ let providerSource: ProviderSource | undefined;
 export function configureProviderSource(source: ProviderSource): void {
 	// Server module re-evaluation can replace the source while this collection
 	// survives. Retire only the previous source's routes, not built-ins.
-	if (collection && providerSource) {
-		for (const provider of collection.getProviders()) {
-			if (providerSource.isCustom(provider.id)) collection.deleteProvider(provider.id);
+	if (providerSource) {
+		for (const collection of collections.values()) {
+			for (const provider of collection.getProviders()) {
+				if (providerSource.isCustom(provider.id)) collection.deleteProvider(provider.id);
+			}
 		}
 	}
 	providerSource = source;
@@ -81,8 +113,17 @@ export function configureProviderSource(source: ProviderSource): void {
  *  honest, late, and unreachable through the picker, which gates on
  *  keyPresent. */
 export function piModels() {
+	const key = scopeKey();
+	let collection = collections.get(key);
 	if (!collection) {
-		collection = createModels({ identity: APP_IDENTITY });
+		if (collections.size >= MAX_COLLECTIONS) collections.delete(collections.keys().next().value!);
+		collection = createModels({
+			identity: APP_IDENTITY,
+			// Every credential lookup goes through the injected seam, read at
+			// REQUEST time (inside the caller's account scope).
+			authContext: { env: async (name) => credentialFor(name), fileExists: ambientFileExists },
+		});
+		collections.set(key, collection);
 		for (const provider of builtinProviders()) {
 			// Keep the native Bedrock implementation reachable by standalone tracing.
 			// Pi's default Node-only loader hides this import from bundlers. Only
@@ -97,9 +138,23 @@ export function piModels() {
 	return collection;
 }
 
+/** pi-ai's ambient-credential probe (AWS profile, gcloud ADC files) —
+ *  same behavior as its default auth context. */
+async function ambientFileExists(file: string): Promise<boolean> {
+	if (!ambientAllowed()) return false;
+	try {
+		const { access } = await import("node:fs/promises");
+		const { homedir } = await import("node:os");
+		await access(file.startsWith("~") ? homedir() + file.slice(1) : file);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** OpenRouter API key (BYOK); tests never read this — they inject engines. */
 export function openRouterApiKey(): string | undefined {
-	return process.env.OPENROUTER_API_KEY || undefined;
+	return credentialFor("OPENROUTER_API_KEY");
 }
 
 /** A fully-resolved model pin — the shape every engine now comes from:

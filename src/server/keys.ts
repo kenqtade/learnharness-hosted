@@ -62,6 +62,8 @@ import { CUSTOM_AUTH_BINDING } from "../core/custom-provider-auth.ts";
 // Shared HMR-stable provenance lets external CLIs exclude file-only injections
 // without importing this store-backed module into the agent layer.
 import { authEnvRecord as boot } from "../core/auth-env.ts";
+import { configureAuthEnv, configureModelsScope } from "../agent/models.ts";
+import { currentUser, multiUser } from "../store/user-scope.ts";
 
 /** Ordinary writable key names. Custom auth writes must use the atomic
  * endpoint-binding seam, never the generic single-key API. */
@@ -81,7 +83,16 @@ export function providerKeyList() {
  *  invisible app-wide — deleted from the process at boot, file keys only.
  *  Read live per call (the launcher exports it before boot). */
 export function envKeysIgnored(): boolean {
-	return process.env.LH_IGNORE_ENV_KEYS === "1";
+	// PLATFORM MODE (multi-user): every account uses ONLY its own saved
+	// keys — a deployment-level env key would be a credential shared by
+	// everyone, so it is ignored exactly like the fresh-user switch.
+	return process.env.LH_IGNORE_ENV_KEYS === "1" || multiUser;
+}
+
+/** PLATFORM MODE: work that runs for nobody in particular (boot, cron, a
+ *  lost scope) holds NO credentials — it must never borrow the owner's. */
+function noKeyScope(): boolean {
+	return multiUser && currentUser() === null;
 }
 
 /**
@@ -116,6 +127,10 @@ export function initAuthEnv(): void {
 			if (process.env[name] !== undefined) record.realEnv.add(name);
 		}
 	}
+	// PLATFORM MODE: process.env is shared by every account, so file keys
+	// are never mirrored into it — each request reads its own account's
+	// file through keyValue / the pi-ai auth context (configureAuthEnv).
+	if (multiUser) return;
 	for (const [name, value] of Object.entries(fileVars)) {
 		if (!isManagedName(name)) continue;
 		if (process.env[name] === undefined) {
@@ -184,7 +199,7 @@ export function resolveKeyStatuses(
 
 /** The GET view: every curated key (present or not) + unknown file vars. */
 export function keyStatuses(): AuthKeyStatus[] {
-	return resolveKeyStatuses(authStore.authVars(), process.env, boot().realEnv, new Set([...AUTH_PROVIDER_ENV_VARS, CUSTOM_PROVIDER.envVar]));
+	return resolveKeyStatuses(noKeyScope() ? {} : authStore.authVars(), multiUser ? {} : process.env, boot().realEnv, new Set([...AUTH_PROVIDER_ENV_VARS, CUSTOM_PROVIDER.envVar]));
 }
 
 /** The live value for one var, env-first (the env-wins rule) — the canonical
@@ -193,6 +208,7 @@ export function keyStatuses(): AuthKeyStatus[] {
  *  otherwise read env before any fill-gap ran). */
 export function keyValue(id: string): string | undefined {
 	if (id === CUSTOM_AUTH_BINDING) return undefined;
+	if (noKeyScope()) return undefined;
 	// The fresh-user switch: ONLY the file store counts (belt-and-
 	// suspenders — the boot deletion already emptied the env; this guards
 	// any env key reintroduced after boot).
@@ -210,8 +226,13 @@ export function providerKeyPresent(provider: string): boolean {
 	if (provider === CUSTOM_PROVIDER.id) return customProviderAvailable();
 	// Explicit opt-in + installation only, never authentication readiness.
 	// Consulted at admission, not inside already-running agent loops.
-	if (provider === CLAUDE_CODE_PROVIDER) return claudeCodeAvailable();
-	if (isSubscriptionProvider(provider)) return subscriptionConnected(provider);
+	// Claude Code runs the SERVER MACHINE's own CLI login — in platform mode
+	// that is the owner's personal credential, so only the owner may use it.
+	if (provider === CLAUDE_CODE_PROVIDER) return (!multiUser || currentUser()?.role === "owner") && claudeCodeAvailable();
+	// Subscription logins are ONE per server process (a single connected
+	// account), so in platform mode they belong to the owner alone and are
+	// never lent to another account. Members use their own API keys.
+	if (isSubscriptionProvider(provider)) return (!multiUser || currentUser()?.role === "owner") && subscriptionConnected(provider);
 	const info = AUTH_PROVIDER_KEYS.find((p) => p.id === provider);
 	return info ? keyValue(info.envVar) !== undefined : true;
 }
@@ -229,7 +250,7 @@ export function saveKey(id: string, value: string): { ok: true; status: AuthKeyS
 	const trimmed = value.trim();
 	authStore.setAuthVar(id, trimmed);
 	const record = boot();
-	if (!record.realEnv.has(id)) {
+	if (!multiUser && !record.realEnv.has(id)) {
 		process.env[id] = trimmed;
 		record.fillGap.add(id);
 	}
@@ -257,3 +278,27 @@ export function deleteKey(id: string): AuthKeyStatus {
 // imported by every route/handler path that touches keys).
 initAuthEnv();
 installCustomProviderSource();
+
+/** What pi-ai sees when it asks for a credential env var (its auth
+ *  context). Single-user: exactly process.env, as before (file keys are
+ *  mirrored there). Platform mode: managed key names come from the
+ *  REQUESTING account's own file — never the shared process env. */
+export function credentialEnv(name: string): string | undefined {
+	if (!multiUser) return process.env[name];
+	if (name === CUSTOM_AUTH_BINDING) return undefined;
+	if (isManagedName(name) || name in authStore.authVars()) return keyValue(name);
+	return process.env[name];
+}
+/** The env picture for presence checks (capabilities): the shared env
+ *  minus every managed key, plus the current account's own keys. */
+export function credentialEnvSnapshot(): Record<string, string | undefined> {
+	if (!multiUser) return process.env;
+	const env: Record<string, string | undefined> = { ...process.env };
+	for (const name of Object.keys(env)) if (isManagedName(name)) delete env[name];
+	if (!noKeyScope()) for (const [name, value] of Object.entries(authStore.authVars())) if (name !== CUSTOM_AUTH_BINDING) env[name] = value;
+	return env;
+}
+configureAuthEnv(credentialEnv, { ambientAllowed: () => !multiUser || currentUser()?.role === "owner" });
+// One pi-ai collection per account in platform mode (custom endpoints are
+// per-account wiring); single-user keeps the one shared collection.
+configureModelsScope(() => (multiUser ? `u:${currentUser()?.id ?? "-"}` : "default"));
