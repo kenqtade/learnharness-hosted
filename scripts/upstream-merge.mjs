@@ -57,7 +57,8 @@ function compareVersions(a, b) {
 
 async function fetchLatestRelease() {
 	const repo = process.env.LH_UPSTREAM_REPO || "amosblomqvist/learnharness";
-	const url = `https://api.github.com/repos/${repo}/releases/latest`;
+	const api = (process.env.LH_GITHUB_API || "https://api.github.com").replace(/\/+$/, "");
+	const url = `${api}/repos/${repo}/releases/latest`;
 
 	const headers = {
 		Accept: "application/vnd.github+json",
@@ -141,9 +142,19 @@ async function main() {
 	const repo = process.env.LH_UPSTREAM_REPO || upstreamJson.repo || "amosblomqvist/learnharness";
 	const baseTag = upstreamJson.base;
 
-	const latestRelease = getLatestReleaseVersion()
-		? { tag: getLatestReleaseVersion(), version: getLatestReleaseVersion() }
-		: await fetchLatestRelease();
+	// A failed LOOKUP (GitHub rate limit — unauthenticated build machines
+	// share 60 requests/hour — or a network blip) is not a failed merge:
+	// build today's code and let the next check try again. Only a merge
+	// that actually started and failed may fail the build (exit 2).
+	let latestRelease;
+	try {
+		latestRelease = getLatestReleaseVersion()
+			? { tag: getLatestReleaseVersion(), version: getLatestReleaseVersion() }
+			: await fetchLatestRelease();
+	} catch (err) {
+		log(`Could not check for an upstream release (${err.message}) — building the current code. Set GITHUB_TOKEN to avoid rate limits.`);
+		process.exit(10);
+	}
 
 	const baseParts = parseVersion(baseTag);
 	const latestParts = parseVersion(latestRelease.tag);

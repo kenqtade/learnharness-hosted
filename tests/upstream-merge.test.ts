@@ -49,6 +49,25 @@ function run(opts: { base: Tree; latest: Tree; ours: Tree; baseTag?: string; lat
 }
 
 describe("upstream-merge.mjs end to end", () => {
+	it("a failed release LOOKUP (rate limit / network) builds the current code: exit 10, tree untouched", () => {
+		const t = fs.mkdtempSync(path.join(os.tmpdir(), "umerge-"));
+		const root = path.join(t, "root");
+		writeTree(root, { "keep.ts": "k", "upstream.json": JSON.stringify({ repo: "x/learnharness", base: "v1.0.0" }) });
+		fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+		fs.copyFileSync(SCRIPT, path.join(root, "scripts", "upstream-merge.mjs"));
+		const env: Record<string, string | undefined> = { ...process.env, LH_GITHUB_API: "http://127.0.0.1:9", TMPDIR: t };
+		delete env.LH_UPSTREAM_LATEST;
+		const r = spawnSync("node", [path.join(root, "scripts", "upstream-merge.mjs")], { encoding: "utf-8", env });
+		try {
+			assert.equal(r.status, 10, r.stdout + r.stderr);
+			assert.match(r.stdout + r.stderr, /Could not check for an upstream release/);
+			assert.equal(fs.readFileSync(path.join(root, "keep.ts"), "utf-8"), "k");
+			assert.equal(JSON.parse(fs.readFileSync(path.join(root, "upstream.json"), "utf-8")).base, "v1.0.0");
+		} finally {
+			fs.rmSync(t, { recursive: true, force: true });
+		}
+	});
+
 	it("clean merge: both sides' edits land, upstream adds/deletes apply, our extra files and dotfiles survive", () => {
 		const r = run({
 			base: { "next.config.ts": LINES, "gone.ts": "old", "keep.ts": "k", ".gitignore": "x" },
