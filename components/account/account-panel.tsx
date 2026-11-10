@@ -76,11 +76,11 @@ export function AccountPanel() {
 	if (!user) return <PageFrame title="Account"><p className="text-sm text-muted-foreground">Loading…</p></PageFrame>;
 
 	return (
-		<PageFrame title="Account" subtitle={`${user.email} · ${user.role === "owner" ? "Platform owner" : "Member"}`}>
+		<PageFrame title="Account" subtitle={`@${user.username} · ${user.role === "owner" ? "Platform owner" : "Member"}`}>
 			<Section title="Profile">
 				<form onSubmit={saveName} className="flex items-end gap-3">
 					<label className="flex flex-1 flex-col gap-1.5 text-sm">
-						<span className="text-muted-foreground">Name</span>
+						<span className="text-muted-foreground">Display name</span>
 						<Input value={name} onChange={(e) => setName(e.target.value)} data-testid="account-name" />
 					</label>
 					<Button type="submit" variant="outline" className="cursor-pointer" data-testid="account-save-name">Save</Button>

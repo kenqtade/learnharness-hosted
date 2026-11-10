@@ -45,7 +45,7 @@ export function AdminPanel() {
 		await load();
 	}
 	async function remove(u: MeUser) {
-		if (!window.confirm(`Delete ${u.name} (${u.email}) and ALL of their sessions, notes and knowledge graph? This cannot be undone.`)) return;
+		if (!window.confirm(`Delete ${u.name} (@${u.username}) and ALL of their sessions, notes and knowledge graph? This cannot be undone.`)) return;
 		const { ok, data } = await sendJson(`/api/admin/users?id=${encodeURIComponent(u.id)}`, "DELETE");
 		report(ok, data, `${u.name} was deleted.`);
 		await load();
@@ -86,13 +86,13 @@ export function AdminPanel() {
 				<div className="overflow-x-auto">
 					<table className="w-full text-left text-sm" data-testid="admin-users">
 						<thead className="text-xs text-muted-foreground">
-							<tr><th className="py-2 pr-3 font-normal">Name</th><th className="pr-3 font-normal">Email</th><th className="pr-3 font-normal">Role</th><th className="pr-3 font-normal">Last sign-in</th><th /></tr>
+							<tr><th className="py-2 pr-3 font-normal">Name</th><th className="pr-3 font-normal">Username</th><th className="pr-3 font-normal">Role</th><th className="pr-3 font-normal">Last sign-in</th><th /></tr>
 						</thead>
 						<tbody>
 							{users.map((u) => (
-								<tr key={u.id} className="border-t border-border" data-testid={`admin-user-${u.email}`}>
+								<tr key={u.id} className="border-t border-border" data-testid={`admin-user-${u.username}`}>
 									<td className="py-2 pr-3">{u.name}{u.disabled && <span className="ml-2 text-xs text-destructive">disabled</span>}</td>
-									<td className="pr-3 text-muted-foreground">{u.email}</td>
+									<td className="pr-3 text-muted-foreground">@{u.username}</td>
 									<td className="pr-3">{u.role === "owner" ? "Owner" : "Member"}</td>
 									<td className="pr-3 text-xs text-muted-foreground">{when(u.lastLoginAt)}</td>
 									<td className="py-2 text-right">

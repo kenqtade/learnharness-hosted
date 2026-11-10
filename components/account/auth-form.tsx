@@ -1,7 +1,9 @@
 "use client";
 /**
  * Sign in / create account (platform mode, multi-user branch). One form,
- * two modes. Sign-up adapts to the platform state:
+ * two modes, kept as short as possible (owner request): a username and a
+ * password — plus an invite code when signing up. Sign-up adapts to the
+ * platform state:
  * - no owner yet → asks for the owner setup code (LH_OWNER_SETUP_CODE);
  * - invite-only → asks for an invite code (prefilled from ?invite=);
  * - open sign-ups → neither.
@@ -32,9 +34,8 @@ function Field({ label, children, hint }: { label: string; children: React.React
 export function AuthForm({ mode }: { mode: "login" | "signup" }) {
 	const params = useSearchParams();
 	const [me, setMe] = useState<Me | null>(null);
-	const [email, setEmail] = useState("");
+	const [username, setUsername] = useState("");
 	const [password, setPassword] = useState("");
-	const [name, setName] = useState("");
 	const [code, setCode] = useState(params.get("invite") ?? "");
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
@@ -56,8 +57,8 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
 		setError(null);
 		const payload =
 			mode === "login"
-				? { email, password }
-				: { email, password, name, ...(claimingOwner ? { setupCode: code } : needsInvite ? { inviteCode: code } : {}) };
+				? { username, password }
+				: { username, password, ...(claimingOwner ? { setupCode: code } : needsInvite ? { inviteCode: code } : {}) };
 		const { ok, data } = await sendJson(`/api/auth/${mode}`, "POST", payload);
 		if (!ok) {
 			setError(data.error ?? "Something went wrong. Try again.");
@@ -92,13 +93,11 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
 								the invites and the other accounts. Enter the owner setup code from the server settings.
 							</p>
 						)}
-						{mode === "signup" && (
-							<Field label="Name">
-								<Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" data-testid="auth-name" />
-							</Field>
-						)}
-						<Field label="Email">
-							<Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" data-testid="auth-email" />
+						<Field label="Username" hint={mode === "signup" ? "Letters, numbers, dot, dash or underscore (3–32)." : undefined}>
+							<Input
+								required autoFocus value={username} onChange={(e) => setUsername(e.target.value)}
+								autoComplete="username" autoCapitalize="none" spellCheck={false} data-testid="auth-username"
+							/>
 						</Field>
 						<Field label="Password" hint={mode === "signup" ? "At least 8 characters." : undefined}>
 							<Input
@@ -118,7 +117,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
 						</Button>
 						<p className="text-center text-xs text-muted-foreground">
 							{mode === "login" ? (
-								<>No account yet? <Link className="underline" href={`/signup${params.size ? `?${params}` : ""}`}>Create one</Link></>
+								<>Have an invite? <Link className="underline" href={`/signup${params.size ? `?${params}` : ""}`}>Create your account</Link></>
 							) : (
 								<>Already have an account? <Link className="underline" href={`/login${params.get("next") ? `?next=${encodeURIComponent(params.get("next")!)}` : ""}`}>Sign in</Link></>
 							)}

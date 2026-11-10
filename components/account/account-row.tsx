@@ -15,7 +15,7 @@ export function AccountRow() {
 	if (!me?.multiUser || !me.user) return null;
 	return (
 		<div className="mt-1 flex flex-col" data-testid="account-row">
-			<Link href="/account" className={row} data-testid="account-entry" title={me.user.email}>
+			<Link href="/account" className={row} data-testid="account-entry" title={`@${me.user.username}`}>
 				<UserIcon className="size-3" />
 				<span className="truncate normal-case tracking-normal">{me.user.name}</span>
 			</Link>

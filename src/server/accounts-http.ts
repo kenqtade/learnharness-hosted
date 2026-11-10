@@ -52,14 +52,14 @@ export function authMeResponse(req: Request): Response {
 export async function authLoginResponse(req: Request): Promise<Response> {
 	if (!multiUser) return off();
 	const b = await body(req);
-	const r = login(b.email, b.password);
+	const r = login(b.username ?? b.email, b.password);
 	return r.ok ? signedIn(req, r.value) : failed(r);
 }
 
 export async function authSignupResponse(req: Request): Promise<Response> {
 	if (!multiUser) return off();
 	const b = await body(req);
-	const r = signup({ email: b.email, password: b.password, name: b.name, inviteCode: b.inviteCode, setupCode: b.setupCode });
+	const r = signup({ username: b.username, password: b.password, name: b.name, inviteCode: b.inviteCode, setupCode: b.setupCode });
 	return r.ok ? signedIn(req, r.value, { created: true }) : failed(r);
 }
 

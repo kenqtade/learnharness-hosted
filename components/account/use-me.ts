@@ -9,7 +9,8 @@ import { useEffect, useState } from "react";
 
 export interface MeUser {
 	id: string;
-	email: string;
+	username: string;
+	email?: string;
 	name: string;
 	role: "owner" | "member";
 	createdAt: string;

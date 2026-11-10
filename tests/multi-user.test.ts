@@ -47,47 +47,59 @@ let alice: Account;
 let bob: Account;
 
 test("the first account needs the owner setup code and becomes the owner", () => {
-	const none = accounts.signup({ email: "own@example.com", password: "password-1" });
+	const none = accounts.signup({ username: "owner", password: "password-1" });
 	assert.equal(none.ok, false);
 	assert.equal((none as { status: number }).status, 403);
-	const wrong = accounts.signup({ email: "own@example.com", password: "password-1", setupCode: "nope" });
+	const wrong = accounts.signup({ username: "owner", password: "password-1", setupCode: "nope" });
 	assert.equal(wrong.ok, false);
-	owner = must(accounts.signup({ email: "Own@Example.com ", password: "password-1", setupCode: "setup-code-123", name: "Owner" }));
+	owner = must(accounts.signup({ username: "Owner ", password: "password-1", setupCode: "setup-code-123", name: "Owner" }));
 	assert.equal(owner.role, "owner");
-	assert.equal(owner.email, "own@example.com");
+	assert.equal(owner.username, "owner", "usernames are case-insensitive and trimmed");
 	assert.ok(!JSON.stringify(accounts.listAccounts()).includes("password-1"));
 	assert.ok(!("passwordHash" in accounts.listAccounts()[0]!));
 });
 
 test("after the owner, sign-up needs a valid single-use invite unless open sign-ups is on", () => {
-	assert.equal(accounts.signup({ email: "a@example.com", password: "password-a" }).ok, false);
-	assert.equal(accounts.signup({ email: "a@example.com", password: "password-a", inviteCode: "made-up" }).ok, false);
+	assert.equal(accounts.signup({ username: "alice", password: "password-a" }).ok, false);
+	assert.equal(accounts.signup({ username: "alice", password: "password-a", inviteCode: "made-up" }).ok, false);
 	const invite = accounts.createInvite(owner.id, "for alice");
-	alice = must(accounts.signup({ email: "a@example.com", password: "password-a", inviteCode: invite.code }));
+	alice = must(accounts.signup({ username: "alice", password: "password-a", inviteCode: invite.code }));
 	assert.equal(alice.role, "member");
-	const reuse = accounts.signup({ email: "x@example.com", password: "password-x", inviteCode: invite.code });
+	const reuse = accounts.signup({ username: "xavier", password: "password-x", inviteCode: invite.code });
 	assert.equal(reuse.ok, false, "an invite works once");
-	const dup = accounts.signup({ email: "A@example.com", password: "password-a", inviteCode: accounts.createInvite(owner.id).code });
-	assert.equal(dup.ok, false, "emails are unique, case-insensitively");
+	const dup = accounts.signup({ username: "ALICE", password: "password-a", inviteCode: accounts.createInvite(owner.id).code });
+	assert.equal(dup.ok, false, "usernames are unique, case-insensitively");
 	accounts.setOpenSignups(true);
-	bob = must(accounts.signup({ email: "b@example.com", password: "password-b" }));
+	bob = must(accounts.signup({ username: "bob", password: "password-b" }));
 	accounts.setOpenSignups(false);
-	assert.equal(accounts.signup({ email: "c@example.com", password: "password-c" }).ok, false);
+	assert.equal(accounts.signup({ username: "carol", password: "password-c" }).ok, false);
 });
 
 test("weak input is refused with plain messages", () => {
 	accounts.setOpenSignups(true);
-	assert.match((accounts.signup({ email: "bad", password: "password-1" }) as { error: string }).error, /valid email/);
-	assert.match((accounts.signup({ email: "d@example.com", password: "short" }) as { error: string }).error, /8 characters/);
+	assert.match((accounts.signup({ username: "a b", password: "password-1" }) as { error: string }).error, /3–32 characters/);
+	assert.match((accounts.signup({ username: "ab", password: "password-1" }) as { error: string }).error, /3–32 characters/);
+	assert.match((accounts.signup({ username: "dave", password: "short" }) as { error: string }).error, /8 characters/);
 	accounts.setOpenSignups(false);
 });
 
+test("accounts from the email-only build get a username and can sign in with either", () => {
+	const file = path.join(`${DATA}-platform`, "users.json");
+	const rec = JSON.parse(fs.readFileSync(file, "utf-8"));
+	rec.users.push({ id: "u_legacy00001", email: "old.timer@example.com", name: "Old", role: "member", passwordHash: accounts.hashPassword("legacy-pass"), sessionVersion: 1, createdAt: new Date().toISOString() });
+	fs.writeFileSync(file, JSON.stringify(rec));
+	assert.equal(must(accounts.login("old.timer", "legacy-pass")).id, "u_legacy00001");
+	assert.equal(must(accounts.login("old.timer@example.com", "legacy-pass")).id, "u_legacy00001");
+	assert.equal(accounts.getAccount("u_legacy00001")?.username, "old.timer");
+	must(accounts.deleteAccount("u_legacy00001"));
+});
+
 test("login checks the password; repeated failures are throttled", () => {
-	assert.equal(must(accounts.login("a@example.com", "password-a")).id, alice.id);
-	assert.equal(accounts.login("a@example.com", "wrong").ok, false);
-	assert.equal(accounts.login("nobody@example.com", "x").ok, false);
-	for (let i = 0; i < 5; i++) accounts.login("b@example.com", "wrong");
-	const locked = accounts.login("b@example.com", "password-b");
+	assert.equal(must(accounts.login("alice", "password-a")).id, alice.id);
+	assert.equal(accounts.login("alice", "wrong").ok, false);
+	assert.equal(accounts.login("nobody", "x").ok, false);
+	for (let i = 0; i < 5; i++) accounts.login("bob", "wrong");
+	const locked = accounts.login("bob", "password-b");
 	assert.equal(locked.ok, false);
 	assert.equal((locked as { status: number }).status, 429);
 });
@@ -112,8 +124,8 @@ test("password change: needs the current one, signs other devices out", () => {
 	assert.equal(accounts.changePassword(alice.id, "wrong", "new-password-a").ok, false);
 	must(accounts.changePassword(alice.id, "password-a", "new-password-a"));
 	assert.equal(accounts.verifySession(before), null);
-	assert.equal(accounts.login("a@example.com", "password-a").ok, false);
-	assert.ok(accounts.login("a@example.com", "new-password-a").ok);
+	assert.equal(accounts.login("alice", "password-a").ok, false);
+	assert.ok(accounts.login("alice", "new-password-a").ok);
 });
 
 test("the owner can disable members but never the owner", () => {
@@ -121,7 +133,7 @@ test("the owner can disable members but never the owner", () => {
 	const t = accounts.issueSession(accounts.getAccount(bob.id)!);
 	must(accounts.setDisabled(bob.id, true));
 	assert.equal(accounts.verifySession(t), null);
-	assert.equal((accounts.login("b@example.com", "password-b") as { status: number }).status !== 200, true);
+	assert.equal((accounts.login("bob", "password-b") as { status: number }).status !== 200, true);
 	must(accounts.setDisabled(bob.id, false));
 });
 
@@ -174,7 +186,7 @@ test("platform records never land in a user's space", () => {
 });
 
 test("deleting a member removes the account and all of their data; the owner can't be deleted", () => {
-	const victim = must(accounts.signup({ email: "v@example.com", password: "password-v", inviteCode: accounts.createInvite(owner.id).code }));
+	const victim = must(accounts.signup({ username: "victim", password: "password-v", inviteCode: accounts.createInvite(owner.id).code }));
 	as(victim, () => chatStore.createChat("doomed"));
 	assert.ok(fs.existsSync(path.join(`${DATA}-users`, victim.id)));
 	must(accounts.deleteAccount(victim.id));

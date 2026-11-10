@@ -11,6 +11,9 @@
  *   the user id, the account's sessionVersion and an expiry. Bumping
  *   sessionVersion (sign out everywhere, password change, disable) kills
  *   every outstanding cookie for that account at once.
+ * - Sign-in is USERNAME + password (owner request: keep it easy). No email
+ *   is needed; accounts made by an earlier build (email-only) sign in
+ *   with either their derived username or their old email.
  * - The first account is the OWNER and needs LH_OWNER_SETUP_CODE, so a
  *   stranger who finds the URL first cannot claim the platform. After
  *   that, new accounts need an invite code unless the owner turned on
@@ -32,7 +35,10 @@ const INVITE_TTL_MS = 14 * 24 * 3600 * 1000;
 
 export interface Account {
 	id: string;
-	email: string;
+	/** Sign-in name: lowercase a–z, 0–9, dot, dash, underscore; 3–32 chars. */
+	username: string;
+	/** Legacy (first staging build) — optional, never required. */
+	email?: string;
 	name: string;
 	role: Role;
 	passwordHash: string;
@@ -63,7 +69,21 @@ function writeJson(file: string, value: unknown): void {
 	vfs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 	vfs.renameSync(tmp, file);
 }
-const readUsers = () => readJson<{ users: Account[] }>(USERS_FILE, { users: [] }).users;
+/** Records from the email-only build get a username derived from the
+ *  email's local part (made unique) the first time they're read. */
+function withUsernames(users: Account[]): Account[] {
+	const taken = new Set(users.map((u) => u.username).filter(Boolean));
+	for (const u of users) {
+		if (u.username) continue;
+		const base = (normalizeUsername((u.email ?? "").split("@")[0]) ?? "user").slice(0, 28);
+		let name = base.length >= 3 ? base : `${base}user`;
+		for (let i = 2; taken.has(name); i++) name = `${base}${i}`;
+		u.username = name;
+		taken.add(name);
+	}
+	return users;
+}
+const readUsers = () => withUsernames(readJson<{ users: Account[] }>(USERS_FILE, { users: [] }).users);
 const writeUsers = (users: Account[]) => writeJson(USERS_FILE, { version: 1, users });
 const readInvites = () => readJson<{ invites: Invite[] }>(INVITES_FILE, { invites: [] }).invites;
 const writeInvites = (invites: Invite[]) => writeJson(INVITES_FILE, { version: 1, invites });
@@ -97,19 +117,20 @@ const DUMMY_HASH = hashPassword(crypto.randomBytes(12).toString("hex"));
 
 // ─── validation ───────────────────────────────────────────────────────────
 
-export function normalizeEmail(email: unknown): string | null {
-	if (typeof email !== "string") return null;
-	const e = email.trim().toLowerCase();
-	return /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(e) ? e : null;
+export function normalizeUsername(username: unknown): string | null {
+	if (typeof username !== "string") return null;
+	const u = username.trim().toLowerCase().replace(/^@/, "");
+	return /^[a-z0-9][a-z0-9._-]{2,31}$/.test(u) ? u : null;
 }
+export const USERNAME_RULE = "Usernames are 3–32 characters: letters, numbers, dot, dash or underscore.";
 export function passwordProblem(password: unknown): string | null {
 	if (typeof password !== "string" || password.length < 8) return "Password must be at least 8 characters.";
 	if (password.length > 200) return "Password is too long.";
 	return null;
 }
-function cleanName(name: unknown, email: string): string {
+function cleanName(name: unknown, fallback: string): string {
 	const n = typeof name === "string" ? name.trim().replace(/\s+/g, " ").slice(0, 60) : "";
-	return n || email.split("@")[0]!;
+	return n || fallback;
 }
 const newId = () => `u_${crypto.randomBytes(9).toString("hex")}`;
 const sameText = (a: string, b: string) => {
@@ -140,13 +161,13 @@ export function listAccounts(): PublicAccount[] {
 	return readUsers().map(publicAccount);
 }
 
-export function signup(input: { email?: unknown; password?: unknown; name?: unknown; inviteCode?: unknown; setupCode?: unknown }): Result<Account> {
-	const email = normalizeEmail(input.email);
-	if (!email) return fail("Enter a valid email address.");
+export function signup(input: { username?: unknown; password?: unknown; name?: unknown; inviteCode?: unknown; setupCode?: unknown }): Result<Account> {
+	const username = normalizeUsername(input.username);
+	if (!username) return fail(USERNAME_RULE);
 	const bad = passwordProblem(input.password);
 	if (bad) return fail(bad);
 	const users = readUsers();
-	if (users.some((u) => u.email === email)) return fail("An account with this email already exists.", 409);
+	if (users.some((u) => u.username === username)) return fail("That username is taken. Try another one.", 409);
 	const ownerExists = users.some((u) => u.role === "owner");
 	let role: Role = "member";
 	let invite: Invite | undefined;
@@ -163,7 +184,7 @@ export function signup(input: { email?: unknown; password?: unknown; name?: unkn
 	}
 	const now = new Date().toISOString();
 	const account: Account = {
-		id: newId(), email, name: cleanName(input.name, email), role,
+		id: newId(), username, name: cleanName(input.name, username), role,
 		passwordHash: hashPassword(input.password as string), sessionVersion: 1, createdAt: now, lastLoginAt: now,
 	};
 	writeUsers([...users, account]);
@@ -177,19 +198,21 @@ export function signup(input: { email?: unknown; password?: unknown; name?: unkn
 
 const failures = new Map<string, { count: number; until: number }>();
 
-export function login(emailRaw: unknown, password: unknown): Result<Account> {
-	const email = normalizeEmail(emailRaw) ?? "";
-	const gate = failures.get(email);
+/** Sign in by username (or, for accounts from the email-only build, the
+ *  old email). */
+export function login(identifier: unknown, password: unknown): Result<Account> {
+	const id = typeof identifier === "string" ? identifier.trim().toLowerCase().replace(/^@/, "") : "";
+	const gate = failures.get(id);
 	if (gate && gate.until > Date.now()) return fail("Too many attempts. Wait a minute and try again.", 429);
 	const users = readUsers();
-	const account = users.find((u) => u.email === email);
+	const account = users.find((u) => u.username === id || (u.email !== undefined && u.email === id));
 	const ok = verifyPassword(typeof password === "string" ? password : "", account?.passwordHash ?? DUMMY_HASH) && !!account;
 	if (!ok || !account) {
 		const count = (gate?.count ?? 0) + 1;
-		failures.set(email, { count, until: count >= 5 ? Date.now() + 60_000 : 0 });
-		return fail("Email or password is not correct.", 401);
+		failures.set(id, { count, until: count >= 5 ? Date.now() + 60_000 : 0 });
+		return fail("Username or password is not correct.", 401);
 	}
-	failures.delete(email);
+	failures.delete(id);
 	if (account.disabled) return fail("This account has been disabled by the platform owner.", 403);
 	account.lastLoginAt = new Date().toISOString();
 	writeUsers(users);
@@ -207,7 +230,7 @@ function updateAccount(id: string, change: (a: Account) => Result<void> | void):
 }
 
 export function updateProfile(id: string, input: { name?: unknown }): Result<Account> {
-	return updateAccount(id, (a) => { a.name = cleanName(input.name, a.email); });
+	return updateAccount(id, (a) => { a.name = cleanName(input.name, a.username); });
 }
 
 export function changePassword(id: string, current: unknown, next: unknown): Result<Account> {
