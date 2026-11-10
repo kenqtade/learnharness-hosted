@@ -141,9 +141,14 @@ check(chainOf(local.json, "store") === "fs", "store: local resolves fs");
 // Until the Postgres adapter lands (portability step 5), the hosted store
 // must say so — DATABASE_URL being present is NOT enough to claim ready.
 const hostedStore = hosted.json.states.find((state) => state.kind === "store");
+// convex-store branch: hosted = [convex, postgres]. Without LH_STORE=convex +
+// CONVEX_URL + LH_CONVEX_SECRET, convex is unmet; postgres still has no adapter.
 check(
-	hostedStore.active === null && /adapter not built yet/.test(hostedStore.checked[0].status.reason),
-	"store: hosted refuses to claim postgres until its adapter exists (honest)",
+	hostedStore.active === null &&
+		hostedStore.checked.length === 2 &&
+		/adapter not built yet/.test(hostedStore.checked[1].status.reason) &&
+		!hostedStore.checked[0].status.available,
+	"store: hosted refuses to claim postgres until its adapter exists, and convex until it is configured (honest)",
 );
 check(
 	chainOf(local.json, "runtime") === "in-process",
