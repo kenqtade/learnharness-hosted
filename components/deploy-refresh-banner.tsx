@@ -92,7 +92,7 @@ export default function DeployRefreshBanner() {
 		<div
 			data-testid="refresh-banner"
 			role="status"
-			className="fixed right-4 bottom-4 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border border-border bg-popover px-4 py-3 shadow-lg"
+			className="fixed top-3 left-1/2 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-lg border border-border bg-popover px-4 py-3 shadow-lg"
 		>
 			<div className="text-sm">
 				<span className="font-medium">A new version of LearnHarness is available{live.version ? ` (${live.version})` : ""}.</span>
