@@ -192,6 +192,11 @@ class Run:
                 q = args["questions"][0].get("question", "")
             kind = "quiz" if p["name"] in ("quiz", "probe") else "explain" if p["name"] in ("explain", "recall") else "ask"
             ans = {"type": "answer", "toolCallId": p["id"], "answer": {"kind": kind, "tool": p["name"], "questionText": q, "dontKnow": True, "answers": []}}
+            self.answered = getattr(self, "answered", 0) + 1
+            if self.answered > 1:
+                # A real beginner would say so: lets the prober conclude
+                # (probe_done) instead of probing forever.
+                ans["answer"]["thinking"] = "I'm a complete beginner and don't know any of this yet. Please stop testing me and start teaching me now."
             if not self.turn(ans, f"answer-{i + 1}"):
                 return False
         return True
