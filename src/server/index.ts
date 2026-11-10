@@ -54,3 +54,6 @@ export { claudeCodeInstallationResponse } from "./claude-code.ts";
 // No import side effects; the boot sync lives in stores.ts.
 export * from "./custom-provider.ts";
 export { customProviderGet, customProviderMutation } from "./custom-provider-http.ts";
+export { flushStore, storeReady, withStore } from "./store-ready.ts";
+export { keepAlive } from "./keep-alive.ts";
+export { capabilityReport } from "./capabilities.ts";

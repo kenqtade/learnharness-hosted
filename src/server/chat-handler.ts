@@ -27,7 +27,9 @@ import {
 	steerLiveChat,
 	unregisterLiveAgent,
 } from "./jobs.ts";
-import { runPiTurn } from "./pi/ui-stream.ts";
+import { runPiTurn, type PiTurnSpec } from "./pi/ui-stream.ts";
+import { durableRuntime, durableRuntimeSelected, setDurableRecoverer } from "./durable/harness.ts";
+import { startDurableTurn, type DurableAgentKind, type DurableTurnPlan } from "./durable/turn.ts";
 import { collectToolCallIds } from "./pi/call-ids.ts";
 import { providerEventNote } from "../agent/provider-events.ts";
 import { effectiveSettings, stores } from "./stores.ts";
@@ -62,6 +64,7 @@ import {
 } from "../core/input-events.ts";
 import { steerDelivered } from "../core/contracts.ts";
 import type {CallUsage} from "../core/contracts.ts";
+import { keepAlive } from "./keep-alive.ts";
 
 /**
  * One chat turn over the server-owned native record. Framework-free (plain
@@ -159,9 +162,183 @@ function retentionForSlot(slot: ModelSlotName) {
 	return () => stores.settingsStore.readSettings()?.models?.[slot]?.cacheRetention;
 }
 
-setJobRespawn((jobId) => void jobRunner.runJob(jobId));
+setJobRespawn((jobId) => void keepAlive(jobRunner.runJob(jobId)));
 
 /** The route-facing entry: parse {chatId, input} and run one turn. */
+/** The conversation agent for a chat (prober / teacher / practitioner) —
+ *  ONE construction shared by the live turn and the durable recovery path
+ *  (durable-pi branch), so a resumed turn gets exactly the same tools and
+ *  prompt it started with. Pure move of the former inline expression. */
+function buildConversationAgent(
+	chatId: string,
+	recordKind: string | undefined,
+	teaching: boolean,
+	effective: ReturnType<typeof effectiveSettings>,
+	agentOpts: AgentBuildOptions,
+): TeachingAgent {
+	return recordKind === "practice"
+		? createPracticeAgent(
+				{
+					chatId,
+					chatStore: stores.chatStore,
+					// TARGET VALIDATION (owner round 9): the practice tools read the
+					// WHOLE graph fresh per pose — targets validate against every
+					// proposition, not just the session's picks (pickless sessions
+					// and future graph-tools poses stay valid).
+					graphNodes: () => stores.graphStore.readNodes(),
+					// THE RARELY-NEEDED SET (owner round 10): research + pdf jobs
+					// (same runner/gating as the teacher's — research honestly
+					// absent when no engine is live) and the map readers behind
+					// the SAME settings gate as the prober's.
+					jobs: {
+						chatId,
+						jobStore: stores.jobStore,
+						spawn: (job, input) => void keepAlive(jobRunner.runJob(job.id, input)),
+						searchAvailable,
+					},
+					...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
+				},
+				agentOpts,
+			)
+		: teaching
+		? createTeacherAgent(
+				{
+					chatId,
+					chatStore: stores.chatStore,
+					jobStore: stores.jobStore,
+					spawn: (job, input) => void keepAlive(jobRunner.runJob(job.id, input)),
+					// The registry drop's signal (2026-09-20): no live engine
+					// = no research tool in the teacher's registry.
+					searchAvailable,
+				},
+				agentOpts,
+			)
+		: createProberAgent(
+				{
+					chatId,
+					chatStore: stores.chatStore,
+					deliver: (steer) => void deliverJobResult(steer),
+					// Fix wave (2026-09-20): the prober carries research + pdf
+					// dispatch (owner ruling — phase-omnipresent), so its ctx
+					// needs the same job wiring as the teacher's.
+					jobStore: stores.jobStore,
+					spawn: (job, input) => void keepAlive(jobRunner.runJob(job.id, input)),
+					searchAvailable,
+					// The map reader (wave 7): the prober reads the learner's
+					// knowledge graph through tools when the gate opens —
+					// graph master switch AND the agent.graphTools toggle.
+					...(graphToolsEnabled(effective) ? { graphStore: stores.graphStore } : {}),
+				},
+				agentOpts,
+			);
+}
+
+/** DURABLE-PI BRANCH: open the durable runtime — which resumes any turn a
+ *  dead process left unfinished — before anything looks at turn liveness.
+ *  No-op unless LH_RUNTIME=pi-durable. Called at boot (instrumentation.ts),
+ *  by the reattach stream, and before a new turn takes the chat's lock. */
+export async function ensureDurableRecovered(): Promise<void> {
+	if (!durableRuntimeSelected()) return;
+	try {
+		await durableRuntime();
+	} catch (err) {
+		console.error("[durable] could not open/recover the durable runtime:", err);
+	}
+}
+
+/** DURABLE-PI BRANCH: the constructed Agent as a durable turn SPEC. */
+function durablePlan(agent: TeachingAgent, kind: DurableAgentKind): DurableTurnPlan {
+	return {
+		kind,
+		systemPrompt: agent.state.systemPrompt,
+		tools: agent.state.tools,
+		model: { provider: agent.state.model.provider, modelId: agent.state.model.id },
+		thinkingLevel: agent.state.thinkingLevel,
+	};
+}
+
+/** The Agent's starting transcript minus its synthesized system message —
+ *  the same list runPiTurn's settle seam would hand onFinish. */
+function specMessages(agent: TeachingAgent) {
+	return agent.state.messages.filter((m) => (m as { role?: string }).role !== "system");
+}
+
+/**
+ * DURABLE RECOVERY (durable-pi branch): a process died mid-turn. On the next
+ * open the Harness asks for each unfinished turn's tools BEFORE it resumes
+ * scheduling; we rebuild them with the exact construction the live turn
+ * used, then settle the resumed run into the chat record — idempotently
+ * (durable message ids already in the record are skipped).
+ */
+setDurableRecoverer((turn) => {
+	const chatId = turn.chatId;
+	const record = stores.chatStore.getChat(chatId);
+	if (!record) return null;
+	const effective = effectiveSettings();
+	const spec = resolveConversationSpec(record.settings, effective.models.strong);
+	if (!spec || spec.provider === "chatgpt" || isSubscriptionProvider(spec.provider)) return null;
+	const engine = piEngineForSpec(spec, true, undefined, retentionForSlot("strong"));
+	const base = asAgentMessages(record.messages.slice(0, turn.baseCount));
+	const agent = buildConversationAgent(chatId, record.kind, turn.kind === "teacher", effective, {
+		engine,
+		callPurpose: { background: true },
+		messages: base,
+		toolToggles: effective.agent.tools,
+		chatId,
+		promptSwitches: effective.agent.prompts,
+	});
+	const baseMessages = specMessages(agent);
+	const steps: CallUsage[] = [];
+	const turnUsageId = crypto.randomUUID();
+	const modelId = `${engine.model.provider}:${engine.model.id}`;
+	return {
+		plan: durablePlan(agent, turn.kind),
+		baseMessages,
+		callbacks: {
+			usedToolCallIds: new Set(collectToolCallIds(record.messages)),
+			onUsage: (usage) => steps.push({
+				inputTokens: usage.input,
+				outputTokens: usage.output,
+				cacheReadTokens: usage.cacheRead,
+				cacheWriteTokens: usage.cacheWrite,
+				cacheWrite1hTokens: usage.cacheWrite1h ?? 0,
+				reasoningTokens: usage.reasoning ?? 0,
+			}),
+			onError: (error) => {
+				console.error(`[chat ${chatId}] recovered turn error:`, error);
+				return "An error occurred.";
+			},
+			onSettleError: settlementErrorText,
+			onSettleFailure: (error, reportedErrorText) => {
+				rememberTurnFailure(chatId, reportedErrorText ?? settlementErrorText(error));
+				endTurn(chatId);
+				unregisterTurn(chatId);
+			},
+			onFinish: (messages, isAborted) => {
+				const present = new Set((stores.chatStore.getChat(chatId)?.messages ?? []).map((m) => m.id));
+				const fresh = messages.slice(baseMessages.length).filter((m) => !present.has((m as { id?: string }).id ?? ""));
+				const stamped = persistTurn(stores.chatStore, chatId, 0, fresh, isAborted);
+				const response = stamped.find((m) => (m as { role?: string }).role === "assistant");
+				if (response && steps.length > 0) {
+					stores.chatStore.appendTurnUsage(chatId, { id: turnUsageId, messageId: response.id, at: new Date().toISOString(), model: modelId, steps });
+				}
+				if (record.kind !== "practice" && extractionEnabled(effective.graph)) {
+					triggerExtraction(stores, extraction, chatId, effective.graph.extractionChunkTokens);
+				}
+				applyParkedDismissal(stores.chatStore, chatId);
+				endTurn(chatId);
+				unregisterTurn(chatId);
+				reconcileUserSteers(chatId, stamped);
+				console.info(`[chat ${chatId}] durable turn recovered and settled (${stamped.length} new message(s))`);
+			},
+		},
+		onAttached: (handle) => {
+			beginTurn(chatId);
+			registerTurn(chatId, handle);
+		},
+	};
+});
+
 export async function handleChatRequest(
 	req: Request,
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
@@ -196,6 +373,9 @@ export async function handleChatInput(
 	input: TurnInput,
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
 ): Promise<Response> {
+	// DURABLE-PI BRANCH: a turn resumed from a crash must hold this chat's
+	// lock before a new one can take it (no-op on the default runtime).
+	await ensureDurableRecovered();
 	let record = stores.chatStore.getChat(chatId);
 	if (!record) {
 		return Response.json({ error: "Unknown chat" }, { status: 404 });
@@ -462,61 +642,7 @@ export async function handleChatInput(
 	// uniform across kinds).
 	const constructed: TeachingAgent = buildAgent
 		? buildAgent({ ...agentOpts, teaching })
-		: record.kind === "practice"
-			? createPracticeAgent(
-					{
-						chatId,
-						chatStore: stores.chatStore,
-						// TARGET VALIDATION (owner round 9): the practice tools read the
-						// WHOLE graph fresh per pose — targets validate against every
-						// proposition, not just the session's picks (pickless sessions
-						// and future graph-tools poses stay valid).
-						graphNodes: () => stores.graphStore.readNodes(),
-						// THE RARELY-NEEDED SET (owner round 10): research + pdf jobs
-						// (same runner/gating as the teacher's — research honestly
-						// absent when no engine is live) and the map readers behind
-						// the SAME settings gate as the prober's.
-						jobs: {
-							chatId,
-							jobStore: stores.jobStore,
-							spawn: (job, input) => void jobRunner.runJob(job.id, input),
-							searchAvailable,
-						},
-						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
-					},
-					agentOpts,
-				)
-			: teaching
-			? createTeacherAgent(
-					{
-						chatId,
-						chatStore: stores.chatStore,
-						jobStore: stores.jobStore,
-						spawn: (job, input) => void jobRunner.runJob(job.id, input),
-						// The registry drop's signal (2026-09-20): no live engine
-						// = no research tool in the teacher's registry.
-						searchAvailable,
-					},
-					agentOpts,
-				)
-			: createProberAgent(
-					{
-						chatId,
-						chatStore: stores.chatStore,
-						deliver: (steer) => void deliverJobResult(steer),
-						// Fix wave (2026-09-20): the prober carries research + pdf
-						// dispatch (owner ruling — phase-omnipresent), so its ctx
-						// needs the same job wiring as the teacher's.
-						jobStore: stores.jobStore,
-						spawn: (job, input) => void jobRunner.runJob(job.id, input),
-						searchAvailable,
-						// The map reader (wave 7): the prober reads the learner's
-						// knowledge graph through tools when the gate opens —
-						// graph master switch AND the agent.graphTools toggle.
-						...(graphToolsEnabled(effective) ? { graphStore: stores.graphStore } : {}),
-					},
-					agentOpts,
-				);
+		: buildConversationAgent(chatId, record.kind, teaching, effective, agentOpts);
 
 	// A test-injected agent gets no usage collector (tests assert the
 	// transcript, not the money channel); when it's ours, usage flows through
@@ -535,15 +661,21 @@ export async function handleChatInput(
 		// run's first LLM call (the native replacement for continuation
 		// coalescing). Settlement still cannot beat the flow below: it needs
 		// a streamed response, which never happens inside the constructor.
-		registerLiveAgent(chatId, constructed, input.type !== "steers" && input.type !== "continue",
+		// DURABLE-PI BRANCH: under LH_RUNTIME=pi-durable the turn runs inside
+		// pi-durable's Harness (src/server/durable/) instead of this Agent —
+		// the Agent is only the turn's SPEC (prompt, tools, model, history).
+		// Subscription/ChatGPT routes stream through their own request
+		// cycles, not pi-ai Models, so they keep the in-process runner.
+		const useDurable = durableRuntimeSelected() && !requestCycle && !isSubscriptionProvider(conversation.provider) && conversation.provider !== "chatgpt";
+		// The spec Agent never runs under durable — handing it steers would
+		// strand them; they stay queued and ride the idle wake instead.
+		if (!useDurable) registerLiveAgent(chatId, constructed, input.type !== "steers" && input.type !== "continue",
 			input.type === "steers" ? new Set(appends.map((message) => message.id)) : undefined);
 		// Debug recorder run marker (owner, 2026-10-04): correlates the
 		// JSONL event stream with the record's turns; no-op unless
 		// LH_PROVIDER_EVENTS=1.
 		providerEventNote(chatId, "turn", `run start (base: ${agentMessages.length} messages)`);
-		const handle = runPiTurn({
-			agent: constructed,
-			requestCycle,
+		const turnSpec: Omit<PiTurnSpec, "agent" | "requestCycle"> = {
 			// The coalescing window seam (COMPACTION LAW, 2026-10-09): tests
 			// tighten it via LH_UPDATE_FLUSH_MS; production rides the 100ms
 			// default in ui-stream.
@@ -667,7 +799,17 @@ export async function handleChatInput(
 						};
 					}, chatId);
 			},
-		});
+		};
+		const handle = useDurable
+			? await startDurableTurn({
+					chatId,
+					plan: durablePlan(constructed, record.kind === "practice" ? "practice" : teaching ? "teacher" : "prober"),
+					baseMessages: specMessages(constructed),
+					baseCount: persistBaseCount,
+					onUsage: collectUsage,
+					...turnSpec,
+				})
+			: runPiTurn({ agent: constructed, requestCycle, ...turnSpec });
 		// The turn is now a live background object: register it so any view
 		// can reattach (GET /api/chats/[id]/stream) or remotely abort it
 		// (POST /api/activity/abort, kind "turn"). Registration after the

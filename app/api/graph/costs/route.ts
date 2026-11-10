@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * GET /api/graph/costs — the graph view's cost pill (2026-09 graph cost
  * metrics wave): what the graph PIPELINE cost, folded read-time from the
@@ -14,6 +15,9 @@ import { graphCosts } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+async function GET_handler() {
 	return Response.json(graphCosts());
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const GET = withStore(GET_handler);

@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import fs from "./vfs.ts";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { SOURCE_ORGANIZATION_FILE } from "../../config.ts";

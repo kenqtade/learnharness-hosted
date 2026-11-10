@@ -29,6 +29,7 @@
  */
 
 import type { PiTurnHandle } from "./pi/ui-stream.ts";
+import { keepAlive } from "./keep-alive.ts";
 
 interface LhTurnRunsGlobal {
 	__lhTurnRuns?: Map<string, PiTurnHandle>;
@@ -63,11 +64,17 @@ export function clearTurnFailure(chatId: string): void {
  *  starts). One per chat by construction — the 409 guard. */
 export function registerTurn(chatId: string, handle: PiTurnHandle): void {
 	runs().set(chatId, handle);
+	// Serverless (Vercel): the turn outlives the POST that started it —
+	// hold the function open until unregisterTurn settles it.
+	keepAlive(new Promise<void>((resolve) => settles.set(chatId, resolve)));
 }
+const settles = new Map<string, () => void>();
 
 /** Unregister at settle — chat-handler's onFinish, LAST (after endTurn). */
 export function unregisterTurn(chatId: string): void {
 	runs().delete(chatId);
+	settles.get(chatId)?.();
+	settles.delete(chatId);
 }
 
 /** The live turn handle for a chat, or undefined — the subscribe endpoint's

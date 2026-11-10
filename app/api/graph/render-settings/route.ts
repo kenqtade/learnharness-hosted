@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * GET/PUT /api/graph/render-settings — server persistence for the graph
  * view's rendering controls (node/edge/arrow/label sizes, the label-zoom
@@ -16,11 +17,11 @@ import { readRenderSettings, writeRenderSettings } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+async function GET_handler() {
 	return Response.json(readRenderSettings());
 }
 
-export async function PUT(request: Request) {
+async function PUT_handler(request: Request) {
 	let body: unknown;
 	try {
 		body = await request.json();
@@ -29,3 +30,7 @@ export async function PUT(request: Request) {
 	}
 	return Response.json(writeRenderSettings(body));
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const GET = withStore(GET_handler);
+export const PUT = withStore(PUT_handler);

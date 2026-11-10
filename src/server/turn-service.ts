@@ -25,6 +25,7 @@ import { coverageOf } from "../core/coverage.ts";
 import type { ChatStore, GraphStore } from "../core/ports.ts";
 import type { ExtractionPipeline } from "../agent/subagents/extraction.ts";
 import { ModelsNotConfiguredError, ProviderKeyMissingError } from "../core/settings.ts";
+import { keepAlive } from "./keep-alive.ts";
 
 /** Distinguish a failed canonical save from later bookkeeping failures. */
 export class TurnPersistenceError extends Error {
@@ -118,7 +119,7 @@ export function triggerExtraction(
 		if (!record) return;
 		const covered = coverageOf(record.messages, deps.graphStore.readCoverage(), chatId);
 		if (covered.uncoveredTokens < chunkTokens) return;
-		void extraction.runExtraction(chatId).catch((err) => {
+		void keepAlive(extraction.runExtraction(chatId)).catch((err) => {
 			// BYOK (owner, 2026-09-22) + key presence (provider-key interlude,
 			// 2026-09-25): an unconfigured OR keyless write channel SKIPS (the
 			// coverage ledger keeps the messages uncovered — the next trigger

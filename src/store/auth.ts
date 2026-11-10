@@ -15,7 +15,7 @@
  * untouched until a catalog entry adopts them).
  */
 
-import fs from "node:fs";
+import fs from "./vfs.ts";
 import path from "node:path";
 import { AUTH_FILE } from "../../config.ts";
 import type { AuthStore } from "../core/ports.ts";

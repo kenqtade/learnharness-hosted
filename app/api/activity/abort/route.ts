@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * POST /api/activity/abort — the dock's END/ABORT control, uniform across
  * process kinds (user-decided contract): body {kind: "job"|"extraction"|"turn", id}
@@ -19,7 +20,7 @@
  */
 import { abortExtraction, abortJob, abortTurn } from "@/src/server";
 
-export async function POST(req: Request) {
+async function POST_handler(req: Request) {
 	let body: unknown;
 	try {
 		body = await req.json();
@@ -52,3 +53,6 @@ export async function POST(req: Request) {
 	abortExtraction(id);
 	return Response.json({ ok: true });
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const POST = withStore(POST_handler);

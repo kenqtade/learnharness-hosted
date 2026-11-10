@@ -118,9 +118,9 @@ export const DICTATION_KEYLESS = "Dictation needs a Deepgram key";
  *  (zero-keys wave, owner 2026-09-25). */
 async function mintFreshToken(): Promise<string> {
 	const res = await fetch("/api/stt/token");
-	const data = (await res.json()) as { token?: string; message?: string };
+	const data = (await res.json()) as { token?: string; message?: string; keyless?: boolean };
 	if (!res.ok || !data.token) {
-		if (res.status === 503) throw new Error(DICTATION_KEYLESS);
+		if (res.status === 503 || data.keyless) throw new Error(DICTATION_KEYLESS);
 		throw new Error(data.message ?? `token route ${res.status}`);
 	}
 	return data.token;

@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * GET /api/settings — THE user settings record (settings-storage wave,
  * 2026-09-19): the whole delta record at data/settings.json (config.
@@ -18,6 +19,9 @@ import { settingsStore } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+async function GET_handler() {
 	return Response.json({ settings: settingsStore.readSettings() });
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const GET = withStore(GET_handler);

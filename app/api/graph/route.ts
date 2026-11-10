@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 import { graphView } from "@/src/server";
 
 /**
@@ -8,6 +9,9 @@ import { graphView } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+async function GET_handler() {
 	return Response.json(graphView());
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const GET = withStore(GET_handler);

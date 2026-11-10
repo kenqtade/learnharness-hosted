@@ -32,7 +32,7 @@
  * sync fs, no framework.
  */
 
-import * as fs from "node:fs";
+import * as fs from "./vfs.ts";
 import * as path from "node:path";
 import { LEDGER_FILES, POSITIONS_FILE, SOURCES_FILE } from "../../config.ts";
 import { assertGraphFormat, ensureGraphFormat } from "./graph-format.ts";

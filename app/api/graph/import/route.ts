@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * POST /api/graph/import — the format-agnostic front door's transport
  * (vision §1, 2026-09-13): raw personal-notes files in, one extraction run
@@ -109,7 +110,7 @@ async function readImportForm(request: Request): Promise<FormData> {
 	}
 }
 
-export async function POST(request: Request) {
+async function POST_handler(request: Request) {
 	let form: FormData;
 	try {
 		form = await readImportForm(request);
@@ -172,3 +173,6 @@ export async function POST(request: Request) {
 	await Promise.all(workers);
 	return Response.json({ results });
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const POST = withStore(POST_handler);

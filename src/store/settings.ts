@@ -17,7 +17,7 @@
  * a value that would silently shift a knob.
  */
 
-import fs from "node:fs";
+import fs from "./vfs.ts";
 import path from "node:path";
 import { SETTINGS_FILE } from "../../config.ts";
 import {

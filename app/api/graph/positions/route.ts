@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * PUT /api/graph/positions — the live-physics drag commit. The client
  * anneals a drag to rest and sends the new positions; the server
@@ -13,7 +14,7 @@ import { commitPositions } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function PUT(request: Request) {
+async function PUT_handler(request: Request) {
 	let body: unknown;
 	try {
 		body = await request.json();
@@ -22,3 +23,6 @@ export async function PUT(request: Request) {
 	}
 	return Response.json({ positions: commitPositions(body) });
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const PUT = withStore(PUT_handler);

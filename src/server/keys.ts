@@ -123,6 +123,16 @@ export function initAuthEnv(): void {
 			record.fillGap.add(name);
 		}
 	}
+	// CONVEX STORE (convex-store branch): another serverless instance may
+	// have changed or removed a saved key since this one filled the gap —
+	// re-reflect the file copy (real env still wins; it's never in fillGap).
+	if (process.env.LH_STORE === "convex") {
+		for (const name of [...record.fillGap]) {
+			const value = fileVars[name];
+			if (value === undefined) { delete process.env[name]; record.fillGap.delete(name); }
+			else if (process.env[name] !== value) process.env[name] = value;
+		}
+	}
 }
 
 /** Is this env-var name one the keys system manages (curated, provider,

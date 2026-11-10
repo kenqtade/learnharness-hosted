@@ -1,3 +1,4 @@
+import { storeReady } from "@/src/server";
 import { Home } from "@/components/home";
 import { readSettingsRecord } from "@/src/server";
 import { resolveSettings, slotsConfigured } from "@/src/core";
@@ -7,7 +8,8 @@ import { resolveSettings, slotsConfigured } from "@/src/core";
 // the record (dynamic routes aren't cached client-side).
 export const dynamic = "force-dynamic";
 
-export default function HomePage() {
+export default async function HomePage() {
+	await storeReady();
 	// First-run gate (model-slots wave): chats cannot start until the user
 	// has picked all three slots — the dock shows the CTA while the raw
 	// record's models section lacks any slot pin.

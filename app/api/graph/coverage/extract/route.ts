@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * POST /api/graph/coverage/extract — the manual extraction affordance
  * (vision-extraction-coverage.md): run the pipeline over ONE session's
@@ -14,7 +15,7 @@ import { extraction, extractionStatuses } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(request: Request) {
+async function POST_handler(request: Request) {
 	let body: unknown;
 	try {
 		body = await request.json();
@@ -35,3 +36,5 @@ export async function POST(request: Request) {
 	});
 	return Response.json({ started: true }, { status: 202 });
 }
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const POST = withStore(POST_handler);

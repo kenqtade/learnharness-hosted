@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 import { modelCatalog, refreshConnectionCatalog } from "@/src/server";
 
 /**
@@ -6,7 +7,10 @@ import { modelCatalog, refreshConnectionCatalog } from "@/src/server";
  * model's SUPPORTED thinking levels (per its thinkingLevelMap). Static
  * catalog: no network, stable within a pi-ai version.
  */
-export async function GET() {
+async function GET_handler() {
 	await refreshConnectionCatalog();
 	return Response.json(modelCatalog(), { headers: { "Cache-Control": "no-store" } });
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const GET = withStore(GET_handler);

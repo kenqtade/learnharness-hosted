@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * GET /api/search — the search engines' status (search wave, 2026-09-20):
  * the honest availability signal the settings UI explains from (the
@@ -13,6 +14,9 @@ import { searchStatus } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+async function GET_handler() {
 	return Response.json(searchStatus());
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const GET = withStore(GET_handler);

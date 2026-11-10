@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * POST-less BYOK mint: the renderer never holds the real Deepgram key.
  *
@@ -15,12 +16,16 @@
  */
 import { keyValue } from "@/src/server";
 
-export async function GET() {
+async function GET_handler() {
 	const key = keyValue("DEEPGRAM_API_KEY");
 	if (!key) {
+		// 200 + keyless, not 503: the page pre-mints on every load, and "no
+		// key configured" is a normal state, not a server error (it showed
+		// up as a red console error on every page — the open /api/stt/token
+		// bug). dictation.tsx maps `keyless` to its short "needs a key" line.
 		return Response.json(
-			{ message: "No DEEPGRAM_API_KEY — add it to auth.json (desktop) or .env.local (dev)." },
-			{ status: 503 },
+			{ keyless: true, message: "No DEEPGRAM_API_KEY — add it in Settings → Keys." },
+			{ status: 200 },
 		);
 	}
 
@@ -46,3 +51,6 @@ export async function GET() {
 		return Response.json({ message: "Deepgram unreachable" }, { status: 502 });
 	}
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const GET = withStore(GET_handler);

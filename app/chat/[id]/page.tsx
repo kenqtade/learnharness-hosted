@@ -1,3 +1,4 @@
+import { storeReady } from "@/src/server";
 import { notFound } from "next/navigation";
 import { Chat } from "@/components/chat";
 import { slotsConfigured } from "@/src/core";
@@ -12,7 +13,7 @@ export default async function ChatPage({
 	params: Promise<{ id: string }>;
 	searchParams: Promise<{ prompt?: string }>;
 }) {
-	const [{ id }, { prompt }] = await Promise.all([params, searchParams]);
+	const [{ id }, { prompt }] = await Promise.all([params, searchParams, storeReady()]);
 	const chat = getChat(id);
 	if (!chat) notFound();
 	// The persistent setup CTA's seed (BYOK, owner 2026-09-22): slotsConfigured

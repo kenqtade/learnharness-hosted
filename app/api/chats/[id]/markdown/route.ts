@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * THE SESSION MARKDOWN EXPORT (owner, release polish 2026-10-06): the
  * user-facing export the session-markdown engine was built for — the
@@ -23,7 +24,7 @@ function slugify(title: string): string {
 	return slug.length > 0 ? slug : "session";
 }
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
+async function GET_handler(_req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
 	const { id } = await ctx.params;
 	const record = getChat(id);
 	if (!record) return Response.json({ error: "Unknown chat" }, { status: 404 });
@@ -35,3 +36,6 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 		},
 	});
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const GET = withStore(GET_handler);

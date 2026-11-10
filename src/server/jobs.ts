@@ -73,6 +73,7 @@ import { resolveConversationSpec } from "../core/settings-resolution.ts";
 import { connectionBackgroundAllowed, isSubscriptionProvider, onSubscriptionChange } from "../agent/subscription-connections.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
 import type { Agent } from "@earendil-works/pi-agent-core";
+import { keepAlive } from "./keep-alive.ts";
 
 /** Fires one server-side teacher turn: (chatId, input) → HTTP-ish status.
  *  Wave C: the input is the IDLE WAKE — every queued marker as the turn's
@@ -222,7 +223,7 @@ function finalizeSteer(steer: SteerMessage): void {
 export function deliverJobResult(steer: SteerMessage): Promise<void> {
 	const chatId = chatIdOf(steer);
 	const entry = queueSteer(chatId, steer);
-	void pump(chatId);
+	void keepAlive(pump(chatId));
 	return entry.promise;
 }
 
@@ -396,7 +397,7 @@ export function settleSteers(chatId: string, persisted: { id?: string }[], faile
 	if (remaining.length === 0) state().queues.delete(chatId);
 	else {
 		state().queues.set(chatId, remaining);
-		void pump(chatId);
+		void keepAlive(pump(chatId));
 	}
 }
 
@@ -442,7 +443,7 @@ export function abortJob(jobId: string): AbortOutcome {
 		status: "error", error: "Aborted by learner", activity: "aborted",
 		delivery: { kind: "abort", status: "pending" },
 	});
-	void deliverJobResult(buildAbortSteer(job)).catch(() => {
+	void keepAlive(deliverJobResult(buildAbortSteer(job))).catch(() => {
 		/* The saved pending abort notice remains owned by the session. */
 	});
 	return { ok: true };
@@ -747,7 +748,7 @@ export function recoverStaleJobs(): void {
 				const recovered = normalizeLegacyResult(job);
 				if (recovered.delivery?.status === "pending") {
 					restorePendingDeliveries(job.chatId);
-					void pump(job.chatId);
+					void keepAlive(pump(job.chatId));
 				} else if (job.status === "running" && !job.result) {
 					// The sub-agent loop itself died with the process: re-spawn.
 					if (!s.respawn) continue;

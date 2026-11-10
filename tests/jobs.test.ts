@@ -1635,7 +1635,10 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 			assert.equal(job.usage!.model, "faux:faux-1");
 			// faux estimates tokens from the prompt/response text — the
 			// pinned fact is that the ONE completed step's spend survived.
-			assert.ok(job.usage!.inputTokens! > 0, "input tokens billed");
+			// pi-ai 1.5 faux bills a session's prompt as cache write/read
+			// (fresh input 0), so the pinned fact is total prompt spend.
+			const u = job.usage!;
+			assert.ok((u.inputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0) > 0, "input tokens billed");
 			assert.ok(job.usage!.outputTokens! > 0, "output tokens billed");
 		} finally {
 			researchModelOverride.current = undefined;

@@ -1,3 +1,4 @@
+import { withStore } from "@/src/server";
 /**
  * THE REATTACH STREAM (background-turn runner wave, owner ruling
  * 2026-09-25) — and, since CONNECTION DIET B (owner, 2026-10-10), THE
@@ -13,12 +14,18 @@
  * wrapper over the server barrel (the import law); tests drive the seams
  * (turn-runs + ui-stream) directly.
  */
-import { getChat, runningTurn, piTurnResponse, settledTurnResponse } from "@/src/server";
+import { ensureDurableRecovered, getChat, runningTurn, piTurnResponse, settledTurnResponse } from "@/src/server";
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
+async function GET_handler(_req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
 	const { id } = await ctx.params;
 	if (!getChat(id)) return Response.json({ error: "Unknown chat" }, { status: 404 });
+	// DURABLE-PI BRANCH: a returning visitor reattaches to a turn resumed
+	// after a crash (no-op unless LH_RUNTIME=pi-durable).
+	await ensureDurableRecovered();
 	const handle = runningTurn(id);
 	if (!handle) return settledTurnResponse(id);
 	return piTurnResponse(handle);
 }
+
+// convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
+export const GET = withStore(GET_handler);

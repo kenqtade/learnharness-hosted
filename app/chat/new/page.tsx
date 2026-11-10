@@ -1,3 +1,4 @@
+import { storeReady } from "@/src/server";
 import { NewSession } from "@/components/new-session";
 import { readSettingsRecord } from "@/src/server";
 import { slotsConfigured } from "@/src/core";
@@ -20,7 +21,7 @@ export default async function NewSessionPage({
 }: {
 	searchParams: Promise<{ mode?: string }>;
 }) {
-	const { mode } = await searchParams;
+	const [{ mode }] = await Promise.all([searchParams, storeReady()]);
 	return (
 		<NewSession
 			initialConfigured={slotsConfigured(readSettingsRecord()?.models)}

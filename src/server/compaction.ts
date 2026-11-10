@@ -48,6 +48,7 @@ import { emit } from "../core/events.ts";
 import type { ChatStore } from "../core/ports.ts";
 import type { PiEngine } from "../agent/models.ts";
 import { runSubagent } from "../agent/subagents/pi-run.ts";
+import { keepAlive } from "./keep-alive.ts";
 
 /** The summarizer's system prompt — server-owned operational framing,
  *  not model-facing doctrine (buildCompactionPrompt carries the shape). */
@@ -314,5 +315,5 @@ export function kickCompaction(buildDeps: () => CompactionDeps | null, chatId: s
 	if (projectedContextTokens(record.messages, deps.systemPromptTokens) <= deps.thresholdTokens) return;
 	const run = compact(deps, chatId);
 	state().inFlight.set(chatId, run);
-	void run.finally(() => state().inFlight.delete(chatId));
+	void keepAlive(run.finally(() => state().inFlight.delete(chatId)));
 }
