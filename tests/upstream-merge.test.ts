@@ -55,7 +55,7 @@ describe("upstream-merge.mjs end to end", () => {
 		writeTree(root, { "keep.ts": "k", "upstream.json": JSON.stringify({ repo: "x/learnharness", base: "v1.0.0" }) });
 		fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
 		fs.copyFileSync(SCRIPT, path.join(root, "scripts", "upstream-merge.mjs"));
-		const env: Record<string, string | undefined> = { ...process.env, LH_GITHUB_API: "http://127.0.0.1:9", TMPDIR: t };
+		const env: NodeJS.ProcessEnv = { ...process.env, LH_GITHUB_API: "http://127.0.0.1:9", TMPDIR: t };
 		delete env.LH_UPSTREAM_LATEST;
 		const r = spawnSync("node", [path.join(root, "scripts", "upstream-merge.mjs")], { encoding: "utf-8", env });
 		try {
