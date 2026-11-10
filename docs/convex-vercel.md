@@ -39,6 +39,10 @@ browser ──► Vercel function (Next.js)
 | `LH_PROFILE` | `hosted` |
 | `LH_DATA_DIR` / `LH_AUTH_FILE` | `/tmp/lh-data`, `/tmp/lh-data/auth.json` (only used for path mapping; nothing is written there) |
 | `ELECTRON_SKIP_BINARY_DOWNLOAD` | `1` (the desktop shell isn't needed on Vercel) |
+| `LH_MODEL_TIMEOUT_MS` / `LH_MODEL_MAX_RETRIES` | `120000` / `1`: a model that never answers fails with a saved "Request timed out." error before Vercel's 300 s limit, instead of silence |
+
+Multi-user platform (sign-in, invites, a private space per person): see
+[`multi-user.md`](multi-user.md).
 
 ## Commands
 
