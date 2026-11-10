@@ -60,7 +60,16 @@ interface Target {
 	real: string;
 	/** True when the path was moved into a member's data space. */
 	scoped: boolean;
+	/** Member reads only: where to read when the member has no copy yet
+	 *  (INHERITED below). Writes always go to the member's own space. */
+	inherit?: { key: string | null; real: string };
 }
+
+/** Files a member reads from the owner's space until they save their own:
+ *  the settings record (model slots, agent knobs, appearance). Keys are
+ *  platform-wide, so without this a new member starts with no models
+ *  chosen and cannot chat until they find the Agent settings. */
+const INHERITED = new Set(["settings.json"]);
 
 /** Where a path really lives for the CURRENT user (see user-scope.ts). */
 function target(p: string): Target {
@@ -78,6 +87,7 @@ function target(p: string): Target {
 				key: rel === "" ? `users/${space}` : `users/${space}/${posix(rel)}`,
 				real: rel === "" ? path.join(USERS_ROOT, space) : path.join(USERS_ROOT, space, rel),
 				scoped: true,
+				...(INHERITED.has(posix(rel)) ? { inherit: { key: legacyKey(abs), real: abs } } : {}),
 			};
 		}
 	}
@@ -270,15 +280,23 @@ class VDirent {
 
 export type Dirent = realFs.Dirent;
 
+/** A member's inherited file falls back to the owner's copy until the
+ *  member writes their own (see INHERITED). */
+function readable(t: Target): Target {
+	if (!t.inherit) return t;
+	const own = !convexMode || t.key === null ? realFs.existsSync(t.real) : files.has(t.key);
+	return own ? t : { key: t.inherit.key, real: t.inherit.real, scoped: false };
+}
+
 function existsSync(p: realFs.PathLike): boolean {
-	const t = target(String(p));
+	const t = readable(target(String(p)));
 	if (!convexMode || t.key === null) return realFs.existsSync(t.real);
 	return files.has(t.key) || isDirKey(t.key);
 }
 
 function readFileSync(p: realFs.PathOrFileDescriptor, options?: unknown): any {
 	if (typeof p === "number") return realFs.readFileSync(p, options as any);
-	const t = target(String(p));
+	const t = readable(target(String(p)));
 	if (!convexMode || t.key === null) return realFs.readFileSync(t.real, options as any);
 	const data = files.get(t.key);
 	if (data === undefined) throw enoent("open", String(p));

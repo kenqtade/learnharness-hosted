@@ -145,6 +145,19 @@ test("each member has a private data space; the owner keeps the original data", 
 	assert.ok(chatStore.listChats().some((c) => c.id === ownerChat.id));
 });
 
+test("members inherit the owner's settings until they save their own", async () => {
+	const { settingsStore } = await import("../src/store/settings.ts");
+	const { SETTINGS_FILE } = await import("../config.ts");
+	as(owner, () => fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ version: 1, agent: { marker: "owner" } })));
+	const vfs = (await import("../src/store/vfs.ts")).default;
+	assert.match(as(alice, () => vfs.readFileSync(SETTINGS_FILE, "utf-8")), /owner/, "inherited");
+	as(alice, () => vfs.writeFileSync(SETTINGS_FILE, JSON.stringify({ version: 1, agent: { marker: "alice" } })));
+	assert.match(as(alice, () => vfs.readFileSync(SETTINGS_FILE, "utf-8")), /alice/, "own copy wins");
+	assert.match(as(owner, () => vfs.readFileSync(SETTINGS_FILE, "utf-8")), /owner/, "the owner's copy is untouched");
+	assert.match(as(bob, () => vfs.readFileSync(SETTINGS_FILE, "utf-8")), /owner/);
+	assert.ok(settingsStore);
+});
+
 test("the scope follows async work started inside a request", async () => {
 	const id = await as(alice, async () => {
 		await new Promise((r) => setTimeout(r, 5));
