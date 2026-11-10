@@ -1,5 +1,6 @@
 "use strict";
 const { randomUUID } = require("node:crypto");
+const fs = require("node:fs");
 const path = require("node:path");
 const { createRequire, registerHooks } = require("node:module");
 const { pathToFileURL } = require("node:url");
@@ -19,6 +20,40 @@ const MESSAGES = {
 	interaction: "This sign-in action is no longer available.",
 };
 function publicError(error) { return MESSAGES[error?.code] ?? MESSAGES.unavailable; }
+/** Resolve `pkg[/subpath]` through the package's PUBLIC "exports" map with the
+ *  ESM "import" condition, using the same node_modules search paths as `resolve`.
+ *  Only public export entries are honoured (exact keys and "./x/*" patterns). */
+function resolveImportExport(resolve, id) {
+	const parts = id.split("/");
+	const name = id.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+	const subpath = "." + id.slice(name.length);
+	const pick = (target) => {
+		if (typeof target === "string") return target;
+		if (target && typeof target === "object") return pick(target.import ?? target.node ?? target.default);
+		return undefined;
+	};
+	for (const dir of resolve.resolve.paths(name) ?? []) {
+		const root = path.join(dir, name), manifest = path.join(root, "package.json");
+		if (!fs.existsSync(manifest)) continue;
+		const exportsMap = JSON.parse(fs.readFileSync(manifest, "utf8")).exports;
+		if (!exportsMap) return undefined;
+		const map = typeof exportsMap === "string" || !Object.keys(exportsMap).some((k) => k.startsWith(".")) ? { ".": exportsMap } : exportsMap;
+		let target = pick(map[subpath]);
+		if (!target) {
+			for (const [key, value] of Object.entries(map)) {
+				const star = key.indexOf("*");
+				if (star < 0) continue;
+				const before = key.slice(0, star), after = key.slice(star + 1);
+				if (subpath.startsWith(before) && subpath.endsWith(after) && subpath.length >= key.length - 1) {
+					const hit = pick(value);
+					if (hit) { target = hit.replace("*", subpath.slice(before.length, subpath.length - after.length)); break; }
+				}
+			}
+		}
+		return target ? path.join(root, target) : undefined;
+	}
+	return undefined;
+}
 /** Resolve the SAME SDK installation as the standalone server, through public exports. */
 async function loadSubscriptionSDK(baseDirectory) {
 	const resolve = createRequire(path.join(baseDirectory, "package.json"));
@@ -30,7 +65,14 @@ async function loadSubscriptionSDK(baseDirectory) {
 			return next(specifier, specifier === id ? { ...context, conditions: [...context.conditions, "import"] } : context);
 		} });
 		let file;
-		try { file = resolve.resolve(id); } finally { hook.deregister(); }
+		try { file = resolve.resolve(id); } catch (error) {
+			// Some Node lines (22.x) don't route require.resolve through
+			// registerHooks, so the "import" condition never applies and an
+			// import-only package throws ERR_PACKAGE_PATH_NOT_EXPORTED. Fall
+			// back to resolving the SAME public export map by hand.
+			file = resolveImportExport(resolve, id);
+			if (!file) throw error;
+		} finally { hook.deregister(); }
 		return import(pathToFileURL(file).href);
 	};
 	const [sdk, copilot, xai] = await Promise.all([load("@earendil-works/pi-ai"), load("@earendil-works/pi-ai/providers/github-copilot"), load("@earendil-works/pi-ai/providers/xai")]);
