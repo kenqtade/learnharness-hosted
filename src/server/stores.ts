@@ -13,6 +13,12 @@ import { jobStore } from "../store/jobs.ts";
 import { settingsStore } from "../store/settings.ts";
 import { resolveSettings, type EffectiveSettings } from "../core/settings-resolution.ts";
 import { syncCustomProvider } from "./custom-provider.ts";
+import vfs from "../store/vfs.ts";
+import { promptOverrideFs } from "../agent/prompt-segments.ts";
+
+// Prompt overrides are written through the storage seam (store), so the
+// agent's reader must read through it too (Convex mode keeps them there).
+promptOverrideFs.current = vfs;
 /** The wired adapters. Satisfies core/graph.ts's GraphDeps structurally. */
 export const stores = {
 	chatStore,

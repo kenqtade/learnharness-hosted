@@ -42,6 +42,12 @@ const PROMPTS_DIR = path.join(PATHS.root, "src", "agent", "prompts");
  *  (practice has no such tools). */
 const PRACTICE_SHARED_FRAGMENTS = ["10-voice.md", "15-accuracy.md", "16-mental-model.md", "40-formatting.md"];
 
+/** Where override files are READ from. The agent layer may not import the
+ *  store, so the composition root (src/server/stores.ts) points this at the
+ *  storage seam (src/store/vfs.ts) — on Convex the overrides live there,
+ *  not on the instance's disk. Default: the real filesystem. */
+export const promptOverrideFs: { current: { readFileSync(p: string, enc: "utf-8"): string } } = { current: fs };
+
 /** Absolute path for an override file (unchecked — validate first). */
 function overrideFileFor(segmentPath: string): string {
 	return path.join(PROMPTS_OVERRIDE_DIR, ...segmentPath.split("/"));
@@ -53,7 +59,7 @@ function overrideFileFor(segmentPath: string): string {
 export function readPromptOverride(segmentPath: string): string | null {
 	if (!isValidSegmentPath(segmentPath)) return null;
 	try {
-		return fs.readFileSync(overrideFileFor(segmentPath), "utf-8");
+		return promptOverrideFs.current.readFileSync(overrideFileFor(segmentPath), "utf-8");
 	} catch {
 		return null;
 	}
