@@ -57,3 +57,4 @@ export { customProviderGet, customProviderMutation } from "./custom-provider-htt
 export { flushStore, storeReady, withStore } from "./store-ready.ts";
 export { keepAlive } from "./keep-alive.ts";
 export { capabilityReport } from "./capabilities.ts";
+export * from "./upstream-update.ts";
