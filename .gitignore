@@ -1,5 +1,6 @@
 node_modules/
 data/
+data-platform/
 .next/
 *.log
 .DS_Store

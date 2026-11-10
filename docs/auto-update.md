@@ -1,32 +1,46 @@
 # Auto-update (hosted app only)
 
-**What it does:** the hosted app (Vercel) checks daily for a newer upstream LearnHarness release. When one exists, it triggers a Vercel rebuild that merges the new release with our changes. If the merge succeeds, the app updates to the new version. If the merge fails or the build fails, the previous version stays live (Vercel only promotes successful builds).
+**What it does:** the hosted app (Vercel) keeps itself on the latest upstream LearnHarness release. When a newer release exists, it starts a Vercel rebuild that merges that release with our changes (Convex storage, multi-user). If the merge, the safety checks and the build all succeed, the new version goes live and open pages offer a refresh. If any step fails, the previous version stays live and Settings shows why.
 
-**The whole feature is OFF unless `LH_AUTO_UPDATE=1`.** With it unset, the build and runtime behave exactly as today (no daily checks, no merges).
+**The whole feature is OFF unless `LH_AUTO_UPDATE=1`.** With it unset, the build and runtime behave exactly as before: no checks and no merges.
 
 ## Environment variables
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `LH_AUTO_UPDATE` | No (but required for feature to work) | Set to `1` to enable auto-update |
-| `CRON_SECRET` | Yes (when enabled) | A secret token for the Vercel Cron endpoint |
-| `LH_VERCEL_TOKEN` | Yes (when update needed) | Your Vercel API token |
-| `LH_VERCEL_DEPLOYMENT_ID` | Yes (when update needed) | The Vercel deployment ID from your deployment's settings |
-| `LH_VERCEL_PROJECT_NAME` | No | Defaults to `learnharness` |
-| `LH_VERCEL_TEAM_ID` | No | Set if you're on a Vercel team |
+| `LH_AUTO_UPDATE` | To turn it on | Set to `1` to enable auto-update |
+| `CRON_SECRET` | Yes, when enabled | The secret Vercel Cron sends to `/api/cron/update` |
+| `LH_VERCEL_TOKEN` | Yes, when enabled | A Vercel API token. It starts the rebuild and follows its build state |
+| `LH_VERCEL_PROJECT_NAME` | Yes, unless the project is called `learnharness` | The Vercel project name |
+| `LH_VERCEL_TEAM_ID` | When the project belongs to a team | The Vercel team id (`team_…`) |
+| `VERCEL_DEPLOYMENT_ID` | Automatic | Vercel's system variable; the rebuild re-uses this deployment's files. It needs "Automatically expose System Environment Variables", which is on by default |
 | `LH_UPSTREAM_REPO` | No | Defaults to `amosblomqvist/learnharness` |
-| `GITHUB_TOKEN` | No | Set to avoid rate limits on GitHub API |
+| `GITHUB_TOKEN` | No | Avoids GitHub API rate limits |
 
 ## How it works
 
-1. **Cron check (03:17 UTC daily)**: Vercel Cron calls `GET /api/cron/update` with the `CRON_SECRET` header
-2. **Version check**: The endpoint fetches the latest release from GitHub
-3. **Redeploy trigger**: If a newer version exists, it calls Vercel's deployment API to rebuild
-4. **Build-time merge**: During the build, `scripts/vercel-build.sh` runs `scripts/upstream-merge.mjs` which:
-   - Downloads both the current base and the latest release
-   - Merges our changes on top in git
-   - Copies the result to the working directory
-5. **Deploy or rollback**: If the merge and build succeed, the new version deploys. If they fail, the old version stays live.
+1. **When it checks.** Vercel Cron calls `GET /api/cron/update` daily at 03:17 UTC; Hobby plans allow at most daily crons. On top of that, any page that reads the update status (Settings → General) runs the check when the last one is more than 6 hours old. So a new release is picked up within hours of anyone using the app. A rebuild for any one version starts at most once per 24 hours, so this cannot loop.
+2. **Version check.** The latest GitHub release is compared with the running `package.json` version.
+3. **Rebuild.** If the release is newer, the Vercel API redeploys the current deployment. The deployment id is recorded so the app can follow the build.
+4. **Build-time merge.** `scripts/vercel-build.sh` runs `scripts/upstream-merge.mjs`. It downloads the base release (`upstream.json`) and the latest release, replays our changes onto the latest in a temporary git repo, then copies the result back.
+5. **Safety gates, then build.** See below. Vercel only promotes a build that succeeds.
+6. **Status follow-up.** While a rebuild is running, status reads ask Vercel for its state. A failed build becomes `update-failed` ("the current version stays live"). A ready build tells users to refresh. Once the new deployment is serving, it reports "up to date".
+7. **Refresh.** Every page carries the build id it was built with (`LH_BUILD_ID`, baked from `VERCEL_DEPLOYMENT_ID` by `next.config.ts`). The page polls the public `GET /api/version` every 5 minutes and when the tab regains focus. When the live build id differs, it shows **"A new version of LearnHarness is available — Refresh"**. A tab in the background with no unsent text reloads by itself.
+
+## Multi-user mode (`LH_MULTI_USER=1`)
+
+- The status is stored once for the whole server, in the platform space (`<data>-platform/update-status.json`, which is Convex in hosted mode), so every account sees the same thing.
+- **Owner:** Settings → General shows the version, the status, when it last checked, and **Check for updates now**. Failure details (for example "see the Vercel build logs") are shown only to the owner.
+- **Members:** the same version and status, read-only, marked "Managed by the owner of this server", with no operator details.
+- **Everyone** gets the refresh banner, plus a Refresh button in Settings once a newer version is live.
+- **Access rules:**
+
+  | Route | Who |
+  | --- | --- |
+  | `GET /api/update` | any signed-in account |
+  | `POST /api/update` | owner only |
+  | `/api/cron/update` | public (checks `CRON_SECRET`) |
+  | `GET /api/version` | public (version and build id only) |
 
 ## What happens on a conflict
 
@@ -52,33 +66,27 @@ releases merge automatically as long as they pass the safety gates.
 
 ## Manual update
 
-You can manually check for updates by visiting `GET /api/update` (or clicking "Check now" in settings). This returns the current status:
+Owners can click **Check for updates now** in Settings → General, or `POST /api/update`. `GET /api/update` returns the status:
 
 ```json
 {
   "enabled": true,
   "current": "0.5.0",
   "latest": "0.5.1",
-  "checkedAt": "2024-01-15T10:30:00.000Z",
-  "state": "up-to-date",
-  "message": "Up to date (latest upstream release: 0.5.1)",
-  "lastAttempt": {
-    "version": "0.5.1",
-    "at": "2024-01-15T10:30:00.000Z",
-    "deploymentUrl": "https://build-vercel-url.vercel.app"
-  }
+  "checkedAt": "2026-11-10T10:30:00.000Z",
+  "state": "update-triggered",
+  "message": "A rebuild for 0.5.1 was started, the app updates when the build succeeds.",
+  "lastAttempt": { "version": "0.5.1", "at": "2026-11-10T10:30:00.000Z", "deploymentUrl": "https://….vercel.app", "deploymentId": "dpl_…", "buildState": "building" },
+  "buildId": "dpl_…"
 }
 ```
 
+`state` is one of `disabled`, `up-to-date`, `update-triggered`, `update-failed` or `error`.
+
 ## Setting up for the first time
 
-1. Enable auto-update by setting `LH_AUTO_UPDATE=1` in your Vercel project settings
-2. Generate a cron secret: `openssl rand -hex 32`
-3. Set these variables in Vercel:
-   - `CRON_SECRET` = your secret
-   - `LH_AUTO_UPDATE` = `1`
-4. Get your Vercel credentials:
-   - `LH_VERCEL_TOKEN`: Vercel → Settings → Tokens → Create
-   - `LH_VERCEL_DEPLOYMENT_ID`: Vercel → Settings → General → Deployment ID
+1. Generate a cron secret: `openssl rand -hex 32`.
+2. In the Vercel project's environment variables, set `LH_AUTO_UPDATE=1`, `CRON_SECRET`, `LH_VERCEL_TOKEN` (Vercel → Account Settings → Tokens), `LH_VERCEL_PROJECT_NAME` and, for team projects, `LH_VERCEL_TEAM_ID`.
+3. Deploy. The cron in `vercel.json` registers with the production deployment.
 
-The app will check for updates at the next scheduled run (daily at 03:17 UTC) and every time you click "Check now" in settings.
+The app checks at the next cron run, whenever someone opens Settings after 6 hours without a check, and when the owner clicks "Check for updates now".

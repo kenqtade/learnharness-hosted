@@ -1,19 +1,22 @@
-import { withStore, readUpdateStatus, runUpdateCheck } from "@/src/server";
+import { withStore, currentUpdateStatus, runUpdateCheckOnce, refreshBuildState, runningBuildId } from "@/src/server";
 /**
- * GET /api/update — the "Check now" button and status display.
- * GET → current status; POST → run check (with 24h guard on retries).
+ * /api/update — the Settings → Updates row and the refresh banner.
+ * GET  (every signed-in account): current status. Also runs the upstream
+ *      check when the last one is over 6 h old and follows a running
+ *      rebuild, so updates land without waiting for the daily cron.
+ * POST (owner only in platform mode — see routeAccess): check now.
  */
 
 export const dynamic = "force-dynamic";
 
 async function GET_handler() {
-	const status = readUpdateStatus();
-	return Response.json(status);
+	return Response.json(await currentUpdateStatus(), { headers: { "Cache-Control": "no-store" } });
 }
 
 async function POST_handler() {
-	const status = await runUpdateCheck();
-	return Response.json(status);
+	await runUpdateCheckOnce();
+	const status = await refreshBuildState();
+	return Response.json({ ...status, buildId: runningBuildId() }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export const GET = withStore(GET_handler);

@@ -1,3 +1,4 @@
+import "./helpers/isolated-data-dir.ts";
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import * as fs from "node:fs";

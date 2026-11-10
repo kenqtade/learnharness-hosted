@@ -61,13 +61,21 @@ Everything else is the same as `docs/convex-vercel.md`.
 |---|---|
 | Owner's sessions, graph, settings, prompts, jobs | the original data (`data/…` in Convex), so turning the platform on keeps all existing data as the owner's |
 | A member's sessions, graph, settings, prompts, jobs | `users/<id>/…` in Convex; nobody else can read it |
-| Accounts, invites, platform options | `platform/…` in Convex |
+| Accounts, invites, platform options, app update status | `platform/…` in Convex |
 | Owner's API keys | the original `auth.json` |
 | A member's API keys | `users/<id>/auth/auth.json` in Convex; only that member's requests read it |
 
 Live updates (the events stream), the activity dock and background
 extraction runs are also per user: nobody sees or can cancel another
 person's work.
+
+## App updates
+
+With `LH_AUTO_UPDATE=1`, the server keeps itself on the latest upstream
+release (docs/auto-update.md). Everyone sees the version and the update
+status in Settings → General, and a "new version available — Refresh"
+banner once a newer build is live. Only the owner can start a check, and
+only the owner sees failure details.
 
 ## Security notes
 

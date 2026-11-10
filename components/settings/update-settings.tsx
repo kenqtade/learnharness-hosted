@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { BrailleSpinner } from "@/components/braille-spinner";
 import { SettingsRow, Toggle } from "./controls.tsx";
+import { useMe } from "@/components/account/use-me";
+import { useNewBuild } from "@/components/deploy-refresh-banner";
 
 /** Observational snapshot from electron/main.cjs; never updater permission. */
 export type UpdateState = {
@@ -18,13 +20,15 @@ export type HostedUpdateStatus = {
 	current: string;
 	latest?: string;
 	checkedAt?: string;
-	state: "disabled" | "up-to-date" | "update-triggered" | "error";
+	state: "disabled" | "up-to-date" | "update-triggered" | "update-failed" | "error";
 	message?: string;
 	lastAttempt?: {
 		version: string;
 		at: string;
 		deploymentUrl?: string;
+		buildState?: "building" | "ready" | "failed";
 	};
+	buildId?: string;
 };
 
 export const APP_VERSION = process.env.LH_VERSION ?? "";
@@ -101,16 +105,26 @@ export function updateStatusText(state: UpdateState | null): string | null {
 	}
 }
 
-export function hostedStatusText(status: HostedUpdateStatus | null): string | null {
+/** Hosted status line. `canManage` = the owner (or a single-user server):
+ *  members get the same facts without operator instructions/diagnostics. */
+export function hostedStatusText(status: HostedUpdateStatus | null, canManage = true): string | null {
 	if (!status) return null;
-	if (!status.enabled) return "Auto-update is off (set LH_AUTO_UPDATE=1)";
+	if (!status.enabled) return canManage ? HOSTED_OFF_OWNER : HOSTED_OFF_MEMBER;
 	switch (status.state) {
-		case "up-to-date": return `Up to date (latest upstream release: ${status.latest ?? "unknown"})`;
-		case "update-triggered": return status.message ?? "Update triggered.";
-		case "error": return status.message ?? UPDATE_ERROR;
+		case "up-to-date": return status.latest ? `Up to date — ${status.latest} is the latest release.` : "Up to date.";
+		case "update-triggered":
+			return status.lastAttempt?.buildState === "ready" && status.message
+				? status.message
+				: `Updating to ${status.latest ?? "the latest release"}… The new version is being built and checked; open pages will offer a refresh when it is live.`;
+		case "update-failed": return canManage ? status.message ?? UPDATE_ERROR : `An update to ${status.latest ?? "a newer release"} is waiting on a fix; this version stays in use meanwhile.`;
+		case "error": return canManage ? status.message ?? UPDATE_ERROR : "The last update check didn’t complete; it will retry automatically.";
 		default: return null;
 	}
 }
+
+export const HOSTED_OFF_OWNER = "Automatic updates are off on this server (set LH_AUTO_UPDATE=1 in the deployment settings).";
+export const HOSTED_OFF_MEMBER = "Automatic updates are off on this server.";
+export const HOSTED_AUTO_HINT = "This server checks for new LearnHarness releases every few hours and installs them by rebuilding itself — your data stays as it is. Open pages offer a refresh once the new version is live.";
 
 /** Format the last checked time relative to now */
 function formatCheckedAt(checkedAt?: string): string {
@@ -142,56 +156,34 @@ export function UpdateSettings({
 	version?: string;
 	homepage?: string;
 }) {
-	const { state, failed } = useUpdateState();
 	const isDesktop = typeof window !== "undefined" && !!window.lh;
+	if (!isDesktop) return <HostedUpdateRows version={version} homepage={homepage} />;
+	return <DesktopUpdateRows autoUpdate={autoUpdate} onAutoUpdateChange={onAutoUpdateChange} version={version} homepage={homepage} />;
+}
 
-	// Desktop: use IPC-based status
-	const desktopActive = state !== null && state.status !== "disabled";
-	const desktopBusy = state?.status === "checking" || state?.status === "downloading";
-	const desktopCheck = () => {
+function DesktopUpdateRows({
+	autoUpdate,
+	onAutoUpdateChange,
+	version,
+	homepage,
+}: {
+	autoUpdate: boolean;
+	onAutoUpdateChange: (on: boolean) => void;
+	version: string;
+	homepage: string;
+}) {
+	const { state, failed } = useUpdateState();
+	const [checkFailed, setCheckFailed] = useState(false);
+	useEffect(() => setCheckFailed(false), [state]);
+	const active = state !== null && state.status !== "disabled";
+	const busy = state?.status === "checking" || state?.status === "downloading";
+	const status = state?.status === "downloaded" ? updateStatusText(state)
+		: failed || checkFailed ? UPDATE_ERROR : updateStatusText(state);
+	const releaseNotes = version && homepage ? `${homepage}/releases/tag/v${version}` : null;
+	const check = () => {
 		setCheckFailed(false);
 		void window.lh?.checkForUpdates?.().catch(() => setCheckFailed(true));
 	};
-
-	// Hosted: use API-based status (gated to non-desktop)
-	const { status: hostedStatus, loading: hostedLoading, error: hostedError, refresh } = useHostedUpdateStatus(!isDesktop);
-	const [checkFailed, setCheckFailed] = useState(false);
-	const [checking, setChecking] = useState(false);
-	useEffect(() => setCheckFailed(false), [hostedStatus]);
-
-	// Hosted: use API-based status
-	const hostedEnabled = hostedStatus?.enabled ?? false;
-	const hostedActive = hostedEnabled;
-	const hostedCheck = async () => {
-		setCheckFailed(false);
-		setChecking(true);
-		try {
-			const res = await fetch("/api/update", { method: "POST" });
-			if (!res.ok) throw new Error("Check failed");
-			await refresh();
-		} catch {
-			setCheckFailed(true);
-		}
-	};
-
-	const active = isDesktop ? desktopActive : hostedActive;
-	const busy = isDesktop ? desktopBusy : (hostedLoading || checking);
-
-	// Desktop: when isDesktop && active, state is guaranteed non-null (see desktopActive definition)
-	const desktopState = isDesktop && active ? state! : null;
-	const desktopStatusText = desktopState ? updateStatusText(desktopState) : null;
-
-	const status = isDesktop
-	? failed || checkFailed ? UPDATE_ERROR
-		: desktopStatusText
-	: !active ? (hostedStatus !== null && !hostedEnabled ? "Auto-update is off (set LH_AUTO_UPDATE=1)"
-		: hostedStatus !== null ? hostedStatusText(hostedStatus)
-		: null)
-	: (failed || checkFailed || hostedError) ? UPDATE_ERROR
-	: hostedStatus?.state === "error" ? hostedStatus.message ?? UPDATE_ERROR
-	: hostedStatus?.message ?? hostedStatusText(hostedStatus);
-
-	const releaseNotes = version && homepage ? `${homepage}/releases/tag/v${version}` : null;
 
 	return (
 		<>
@@ -202,35 +194,94 @@ export function UpdateSettings({
 					<>
 						{status && <span className="block" role="status" data-testid="update-status">{status}</span>}
 						{active && <span className="block">{MANUAL_UPDATE_HINT}</span>}
-						{!hostedEnabled && !isDesktop && (
-							<span className="block text-muted-foreground font-normal">Auto-update is off (set LH_AUTO_UPDATE=1)</span>
-						)}
 						{releaseNotes && <a href={releaseNotes} target="_blank" rel="noopener noreferrer" className="underline-offset-2 hover:text-foreground hover:underline" data-testid="release-notes">Release notes</a>}
-						{hostedStatus?.checkedAt && (
-							<span className="block text-xs text-muted-foreground">Last checked: {formatCheckedAt(hostedStatus.checkedAt)}</span>
-						)}
 					</>
 				}
 			>
-				{active && (isDesktop ? (
-					desktopState?.status === "downloaded" ? (
-						<Button type="button" size="xs" className="cursor-pointer" data-testid="update-restart" onClick={() => window.lh?.installUpdate?.()}>Restart</Button>
-					) : (
-						<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid="update-check" disabled={busy} aria-busy={busy} onClick={desktopCheck}>
-							{desktopBusy && <BrailleSpinner label={desktopStatusText === "Downloading an update…" ? "Downloading update" : "Checking for updates"} />}
-							Check for updates
-						</Button>
-					)
+				{active && (state.status === "downloaded" ? (
+					<Button type="button" size="xs" className="cursor-pointer" data-testid="update-restart" onClick={() => window.lh?.installUpdate?.()}>Restart</Button>
 				) : (
-					<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid="update-check" disabled={busy} aria-busy={busy} onClick={hostedCheck}>
-						{busy && <BrailleSpinner label="Checking for updates" />}
-						Check now
+					<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid="update-check" disabled={busy} aria-busy={busy} onClick={check}>
+						{busy && <BrailleSpinner label={state.status === "downloading" ? "Downloading update" : "Checking for updates"} />}
+						Check for updates
 					</Button>
 				))}
 			</SettingsRow>
 			{active && (
 				<SettingsRow label="Automatic updates" hint={AUTO_UPDATE_HINT} testid="row-auto-update">
 					<Toggle checked={autoUpdate} label="auto update" onChange={onAutoUpdateChange} />
+				</SettingsRow>
+			)}
+		</>
+	);
+}
+
+/** HOSTED (web) update rows. The server updates itself (cron + checks on
+ *  status reads); this shows where it stands. The owner — or anyone on a
+ *  single-user server — can start a check; members only read. Everyone
+ *  gets Refresh once a newer deployment than this page is live. */
+function HostedUpdateRows({ version, homepage }: { version: string; homepage: string }) {
+	const me = useMe();
+	const canManage = me !== null && (!me.multiUser || me.user?.role === "owner");
+	const { status, loading, error, refresh } = useHostedUpdateStatus(true);
+	const { live, check } = useNewBuild();
+	const [checking, setChecking] = useState(false);
+	const [checkFailed, setCheckFailed] = useState(false);
+	const checkNow = async () => {
+		setCheckFailed(false);
+		setChecking(true);
+		try {
+			const res = await fetch("/api/update", { method: "POST" });
+			if (!res.ok) throw new Error("Check failed");
+			await refresh();
+			check();
+		} catch {
+			setCheckFailed(true);
+		} finally {
+			setChecking(false);
+		}
+	};
+	const busy = loading || checking;
+	const failedNow = checkFailed || (error && !status);
+	const line = failedNow ? UPDATE_ERROR : hostedStatusText(status, canManage);
+	const shown = version || status?.current || "";
+	const releaseNotes = shown && homepage ? `${homepage}/releases/tag/v${shown}` : null;
+	const warn = status?.state === "update-failed" || status?.state === "error" || failedNow;
+	return (
+		<>
+			<SettingsRow
+				label={`Version ${shown || "unknown"}`}
+				testid="row-version"
+				hint={
+					<>
+						{line && <span className={`block ${warn ? "text-amber-400" : ""}`} role="status" data-testid="update-status">{line}</span>}
+						{live && <span className="block text-foreground" data-testid="update-live">Version {live.version} is live — refresh to load it.</span>}
+						{status?.enabled && status.checkedAt && (
+							<span className="block text-xs text-muted-foreground" data-testid="update-checked-at">Last checked: {formatCheckedAt(status.checkedAt)}</span>
+						)}
+						{releaseNotes && <a href={releaseNotes} target="_blank" rel="noopener noreferrer" className="underline-offset-2 hover:text-foreground hover:underline" data-testid="release-notes">Release notes</a>}
+					</>
+				}
+			>
+				<div className="flex items-center gap-2">
+					{live && (
+						<Button type="button" size="xs" className="cursor-pointer" data-testid="update-refresh" onClick={() => window.location.reload()}>Refresh</Button>
+					)}
+					{canManage && status?.enabled && (
+						<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid="update-check" disabled={busy} aria-busy={busy} onClick={checkNow}>
+							{checking && <BrailleSpinner label="Checking for updates" />}
+							Check for updates now
+						</Button>
+					)}
+				</div>
+			</SettingsRow>
+			{status?.enabled && (
+				<SettingsRow
+					label="Automatic updates"
+					testid="row-hosted-auto-update"
+					hint={<>{HOSTED_AUTO_HINT}{!canManage && me?.multiUser && <span className="block">Managed by the owner of this server.</span>}</>}
+				>
+					<span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground" data-testid="hosted-auto-on">On</span>
 				</SettingsRow>
 			)}
 		</>

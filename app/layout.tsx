@@ -4,6 +4,7 @@ import "katex/dist/katex.min.css";
 import "./globals.css";
 import { ShellSwitch } from "@/components/account/shell-switch";
 import UpdateBanner from "@/components/update-banner";
+import DeployRefreshBanner from "@/components/deploy-refresh-banner";
 
 // Chrome = JetBrains Mono, teaching prose = Source Sans 3, titles = CMU
 // Serif (the bundled lh-cmu @font-face in globals.css — no CDN).
@@ -24,6 +25,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 			<ShellSwitch>{children}</ShellSwitch>
 			{/* Auto-update banner (Wave C): fixed card, Electron-only pushes. */}
 			<UpdateBanner />
+			{/* Hosted refresh banner: a newer deployment is live (auto-update). */}
+			<DeployRefreshBanner />
 		</body>
 		</html>
 	);
