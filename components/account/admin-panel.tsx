@@ -74,7 +74,7 @@ export function AdminPanel() {
 		setTimeout(() => setCopied(null), 1500);
 	}
 
-	const name = (id?: string) => users.find((u) => u.id === id)?.name ?? id;
+	const name = (id?: string) => users.find((u) => u.id === id)?.name ?? "a deleted account";
 	const pending = invites.filter((i) => !i.usedBy && Date.parse(i.expiresAt) > Date.now());
 	const used = invites.filter((i) => i.usedBy);
 
