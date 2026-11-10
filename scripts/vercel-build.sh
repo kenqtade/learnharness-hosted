@@ -36,10 +36,16 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 echo "[vercel-build] Running upstream merge..."
+set +e
 node scripts/upstream-merge.mjs
 merge_status=$?
+set -e
 
 if [ $merge_status -eq 0 ]; then
+	echo "[vercel-build] Running storage seam gate..."
+	npx tsx --test tests/storage-seam.test.ts || { echo "[upstream-merge] merged release bypasses the Convex storage seam; refusing to ship"; exit 1; }
+	echo "[vercel-build] Running type check..."
+	NODE_OPTIONS=--max-old-space-size=4096 npx tsc --noEmit || { echo "[upstream-merge] merged release does not type-check; refusing to ship"; exit 1; }
 	echo "[vercel-build] Merge succeeded, installing dependencies..."
 	npm ci --no-audit --no-fund
 	exec npx next build

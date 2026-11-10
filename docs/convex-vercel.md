@@ -67,3 +67,7 @@ CONVEX_URL=... LH_CONVEX_SECRET=... npx tsx scripts/convex-import.mts <dataDir> 
    file store, not the stores. On Vercel they don't survive a cold start.
 6. Free-plan ceilings: Convex has 0.5 GB of data and 1M calls a month;
    Vercel Hobby is for non-commercial use.
+
+## Auto-update (hosted)
+
+The hosted app can update itself to the latest upstream release. See [Auto-update](auto-update.md) for details on enabling it and the required environment variables.

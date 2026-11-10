@@ -141,19 +141,26 @@ function writeStatus(status: UpdateStatus): void {
 }
 
 const DISABLED_MESSAGE = "Auto-update is off (set LH_AUTO_UPDATE=1)";
-const UP_TO_DATE_PREFIX = "Up to date (latest upstream release:";
 
 export function readUpdateStatus(deps: UpdateDeps = {}): UpdateStatus {
 	const env = deps.env ?? process.env;
 	const stored = readStoredStatus();
 	const enabled = env.LH_AUTO_UPDATE === "1";
 	const current = runningVersion();
+	if (!enabled) {
+		return {
+			enabled: false,
+			current,
+			state: "disabled",
+			message: DISABLED_MESSAGE,
+		};
+	}
 	return {
 		...stored,
 		enabled,
 		current,
-		state: stored?.state ?? (enabled ? "up-to-date" : "disabled"),
-		message: stored?.message ?? (enabled ? "Not checked yet." : DISABLED_MESSAGE),
+		state: stored?.state ?? "up-to-date",
+		message: stored?.message ?? "Not checked yet.",
 	};
 }
 
@@ -182,7 +189,7 @@ export async function triggerRedeploy(deps: UpdateDeps = {}): Promise<{ url: str
 		body,
 	});
 	if (!response.ok) {
-		const errorBody = (await response.json()) as { error?: { message?: string } };
+		const errorBody = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
 		throw new Error(errorBody.error?.message ?? `Vercel deploy failed (${response.status})`);
 	}
 	const result = (await response.json()) as { url?: string };
@@ -220,20 +227,20 @@ export async function runUpdateCheck(deps: UpdateDeps = {}): Promise<UpdateStatu
 		release = await fetchLatestRelease(deps);
 	} catch (err) {
 		const message = (err as Error).message;
-		const record: UpdateStatus = { ...base, state: "error", message };
+		const record: UpdateStatus = { ...base, state: "error", message, checkedAt: new Date(now()).toISOString() };
 		writeStatus(record);
 		return record;
 	}
 
 	const latest = release.version;
 	if (compareVersions(latest, current) <= 0) {
-		const record: UpdateStatus = { ...base, state: "up-to-date", latest, checkedAt: new Date(now()).toISOString() };
+		const record: UpdateStatus = { ...base, state: "up-to-date", latest, checkedAt: new Date(now()).toISOString(), message: `Up to date (latest upstream release: ${latest}).` };
 		writeStatus(record);
 		return record;
 	}
 
 	const lastAttempt = stored?.lastAttempt;
-	if (lastAttempt?.version === latest && Date.now() - Date.parse(lastAttempt.at) < MS_IN_24H) {
+	if (lastAttempt?.version === latest && now() - Date.parse(lastAttempt.at) < MS_IN_24H) {
 		const message = `The rebuild for ${latest} was already started at ${new Date(lastAttempt.at).toISOString()}. If the app still shows the old version, the merge or build probably failed (see Vercel build logs).`;
 		const record: UpdateStatus = { ...base, state: "update-triggered", latest, checkedAt: new Date(now()).toISOString(), message };
 		writeStatus(record);

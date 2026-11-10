@@ -1,9 +1,9 @@
-import { withStore, runUpdateCheck, cronSecretMatches } from "@/src/server";
 /**
  * GET /api/cron/update — Vercel Cron triggers this (auth via CRON_SECRET).
- * The cron runs daily (17:03 UTC) and triggers a redeploy if a newer
+ * The cron runs daily (03:17 UTC) and triggers a redeploy if a newer
  * upstream release exists.
  */
+import { withStore, runUpdateCheck, cronSecretMatches } from "@/src/server";
 
 const CRON_SECRET = process.env.CRON_SECRET;
 

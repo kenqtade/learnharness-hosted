@@ -27,18 +27,19 @@ export type HostedUpdateStatus = {
 	};
 };
 
-export const APP_VERSION = process.env.NEXT_PUBLIC_LH_VERSION ?? "";
-const HOMEPAGE = process.env.NEXT_PUBLIC_LH_HOMEPAGE ?? "";
+export const APP_VERSION = process.env.LH_VERSION ?? "";
+const HOMEPAGE = process.env.LH_HOMEPAGE ?? "";
 export const MANUAL_UPDATE_HINT = "Checking downloads available updates. Downloaded updates install when you quit the app.";
 export const AUTO_UPDATE_HINT = "Check at startup and every 24 hours. Turning this off does not stop updates already in progress or ready to install.";
-const UPDATE_ERROR = "Couldn't check for updates. Try again later.";
+const UPDATE_ERROR = "Couldn’t check for updates. Try again later.";
 
 /**
  * Hosted case: fetch status from /api/update. Returns null if check fails.
+ * Gated to only run on hosted (non-desktop) environments.
  */
-export function useHostedUpdateStatus() {
+export function useHostedUpdateStatus(enabled: boolean = true) {
 	const [status, setStatus] = useState<HostedUpdateStatus | null>(null);
-	const [loading, setLoading] = useState(true);
+	const [loading, setLoading] = useState(enabled);
 	const [error, setError] = useState(false);
 
 	const fetchStatus = async () => {
@@ -56,8 +57,9 @@ export function useHostedUpdateStatus() {
 	};
 
 	useEffect(() => {
-		fetchStatus();
-	}, []);
+		if (enabled) fetchStatus();
+		else setLoading(false);
+	}, [enabled]);
 
 	return { status, loading, error, refresh: fetchStatus };
 }
@@ -141,28 +143,28 @@ export function UpdateSettings({
 	homepage?: string;
 }) {
 	const { state, failed } = useUpdateState();
-	const isDesktop = typeof window.lh !== "undefined" && window.lh !== null;
-
-	// Hosted case: use API-based status
-	const { status: hostedStatus, loading: hostedLoading, error: hostedError, refresh } = useHostedUpdateStatus();
-	const [checkFailed, setCheckFailed] = useState(false);
-	useEffect(() => setCheckFailed(false), [hostedStatus]);
+	const isDesktop = typeof window !== "undefined" && !!window.lh;
 
 	// Desktop: use IPC-based status
 	const desktopActive = state !== null && state.status !== "disabled";
 	const desktopBusy = state?.status === "checking" || state?.status === "downloading";
-	const desktopStatus = state?.status === "downloaded" ? updateStatusText(state)
-		: failed || checkFailed ? UPDATE_ERROR : updateStatusText(state);
 	const desktopCheck = () => {
 		setCheckFailed(false);
 		void window.lh?.checkForUpdates?.().catch(() => setCheckFailed(true));
 	};
 
+	// Hosted: use API-based status (gated to non-desktop)
+	const { status: hostedStatus, loading: hostedLoading, error: hostedError, refresh } = useHostedUpdateStatus(!isDesktop);
+	const [checkFailed, setCheckFailed] = useState(false);
+	const [checking, setChecking] = useState(false);
+	useEffect(() => setCheckFailed(false), [hostedStatus]);
+
 	// Hosted: use API-based status
 	const hostedEnabled = hostedStatus?.enabled ?? false;
-	const hostedActive = hostedEnabled && !hostedStatus?.enabled === false;
+	const hostedActive = hostedEnabled;
 	const hostedCheck = async () => {
 		setCheckFailed(false);
+		setChecking(true);
 		try {
 			const res = await fetch("/api/update", { method: "POST" });
 			if (!res.ok) throw new Error("Check failed");
@@ -173,19 +175,21 @@ export function UpdateSettings({
 	};
 
 	const active = isDesktop ? desktopActive : hostedActive;
-	const busy = isDesktop ? desktopBusy : hostedLoading;
+	const busy = isDesktop ? desktopBusy : (hostedLoading || checking);
 
-	// Determine which status text to show
-	const getStatusText = () => {
-		if (isDesktop) {
-			return desktopStatus;
-		}
-		return hostedStatus?.message ?? hostedStatusText(hostedStatus);
-	};
+	// Desktop: when isDesktop && active, state is guaranteed non-null (see desktopActive definition)
+	const desktopState = isDesktop && active ? state! : null;
+	const desktopStatusText = desktopState ? updateStatusText(desktopState) : null;
 
-	const status = !active ? (hostedEnabled ? hostedStatusText(hostedStatus) : "Auto-update is off (set LH_AUTO_UPDATE=1)")
-		: (failed || checkFailed || hostedError) ? UPDATE_ERROR
-		: hostedStatus?.message ?? hostedStatusText(hostedStatus);
+	const status = isDesktop
+	? failed || checkFailed ? UPDATE_ERROR
+		: desktopStatusText
+	: !active ? (hostedStatus !== null && !hostedEnabled ? "Auto-update is off (set LH_AUTO_UPDATE=1)"
+		: hostedStatus !== null ? hostedStatusText(hostedStatus)
+		: null)
+	: (failed || checkFailed || hostedError) ? UPDATE_ERROR
+	: hostedStatus?.state === "error" ? hostedStatus.message ?? UPDATE_ERROR
+	: hostedStatus?.message ?? hostedStatusText(hostedStatus);
 
 	const releaseNotes = version && homepage ? `${homepage}/releases/tag/v${version}` : null;
 
@@ -209,11 +213,11 @@ export function UpdateSettings({
 				}
 			>
 				{active && (isDesktop ? (
-					state.status === "downloaded" ? (
+					desktopState?.status === "downloaded" ? (
 						<Button type="button" size="xs" className="cursor-pointer" data-testid="update-restart" onClick={() => window.lh?.installUpdate?.()}>Restart</Button>
 					) : (
 						<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid="update-check" disabled={busy} aria-busy={busy} onClick={desktopCheck}>
-							{desktopBusy && <BrailleSpinner label={desktopStatus === "Downloading an update…" ? "Downloading update" : "Checking for updates"} />}
+							{desktopBusy && <BrailleSpinner label={desktopStatusText === "Downloading an update…" ? "Downloading update" : "Checking for updates"} />}
 							Check for updates
 						</Button>
 					)
