@@ -81,4 +81,4 @@ boot / reattach / next POST ─► ensureDurableRecovered()
 ## Upgrade notes
 
 - `@earendil-works/pi-ai` and `@earendil-works/pi-agent-core`: 1.4.0 → 1.5.0. One test import moved: `Type` now comes from `typebox`.
-- `engines.node` is pinned to `22.x` (pi needs ≥ 22.19). Pinned rather than open-ended because Vercel picks the newest matching runtime: with `>=22.19.0` it moved to Node 26 and every model request timed out "waiting for response headers".
+- `engines.node` is pinned to `22.x` (pi needs ≥ 22.19). Pinned rather than open-ended because Vercel picks the newest matching runtime (it had moved production to Node 26, which this app was never tested on).

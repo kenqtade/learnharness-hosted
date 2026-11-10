@@ -124,6 +124,21 @@ function defaultThinkingLevel(model: Model<Api>): ThinkingLevel {
 	return supported[0] ?? "off";
 }
 
+/** Serverless request limits (convex-store branch). A host that kills the
+ *  function at a hard wall (Vercel: 300 s) must make a silent model FAIL
+ *  before the wall, or the turn dies with no message saved at all. Opt-in
+ *  via env so local/desktop keep pi-ai's defaults: LH_MODEL_TIMEOUT_MS
+ *  (connect/idle timeout per attempt) and LH_MODEL_MAX_RETRIES. Explicit
+ *  caller options still win (spread after). */
+export function hostedRequestLimits(env: Record<string, string | undefined> = process.env): { timeoutMs?: number; maxRetries?: number } {
+	const out: { timeoutMs?: number; maxRetries?: number } = {};
+	const timeout = Number(env.LH_MODEL_TIMEOUT_MS);
+	if (Number.isFinite(timeout) && timeout > 0) out.timeoutMs = timeout;
+	const retries = env.LH_MODEL_MAX_RETRIES;
+	if (retries !== undefined && retries !== "" && Number.isInteger(Number(retries)) && Number(retries) >= 0) out.maxRetries = Number(retries);
+	return out;
+}
+
 /** The production engine for a RESOLVED spec (model slots wave,
  *  2026-09-20): provider-aware catalog lookup + thinking clamp. The API
  *  key is resolved by pi-ai itself from the environment per request (the
@@ -161,6 +176,7 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 			// Unset adds NOTHING: native defaults/env and explicit caller options survive.
 			const retention = cacheRetention?.();
 			const requestOptions = {
+				...hostedRequestLimits(),
 				...options,
 				...(retention !== undefined ? { cacheRetention: retention } : {}),
 				reasoning: level === "off" ? undefined : level,
