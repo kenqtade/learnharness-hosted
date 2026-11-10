@@ -1,5 +1,6 @@
-import { storeReady } from "@/src/server";
-import { notFound } from "next/navigation";
+import { enterPageScope } from "@/src/server";
+import { notFound, redirect } from "next/navigation";
+import { pageSessionToken } from "@/app/page-scope";
 import { Chat } from "@/components/chat";
 import { slotsConfigured } from "@/src/core";
 import { compactionInFlight, getChat, isTurnRunning, readSettingsRecord, turnFailure } from "@/src/server";
@@ -13,7 +14,8 @@ export default async function ChatPage({
 	params: Promise<{ id: string }>;
 	searchParams: Promise<{ prompt?: string }>;
 }) {
-	const [{ id }, { prompt }] = await Promise.all([params, searchParams, storeReady()]);
+	const [{ id }, { prompt }, token] = await Promise.all([params, searchParams, pageSessionToken()]);
+	if (!enterPageScope(token)) redirect("/login");
 	const chat = getChat(id);
 	if (!chat) notFound();
 	// The persistent setup CTA's seed (BYOK, owner 2026-09-22): slotsConfigured

@@ -51,6 +51,7 @@ const STORAGE_KEY = "lh:sidebar-open";
 import type { ChatGPTControlBridge, NativeSubscriptionControlBridge } from "@/src/core";
 import type { UpdateState } from "@/components/settings/update-settings.tsx";
 import { FilePathDropZone } from "@/components/file-path-drop-zone";
+import { AccountRow } from "@/components/account/account-row";
 const SIDEBAR_AUTOCLOSE = 928;
 
 // Module scope, guarded for SSR (the server has no navigator).
@@ -861,6 +862,7 @@ function SessionsSidebar() {
 								Settings
 							</button>
 						</Hint>
+						<AccountRow />
 					</div>
 				</div>
 

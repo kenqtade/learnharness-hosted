@@ -18,7 +18,7 @@ import { withStore } from "@/src/server";
  * Extraction abort is idempotent by design (aborting with nothing in
  * flight is success — the blob is gone either way) -> 200.
  */
-import { abortExtraction, abortJob, abortTurn } from "@/src/server";
+import { abortExtraction, abortJob, abortTurn, chatStore } from "@/src/server";
 
 async function POST_handler(req: Request) {
 	let body: unknown;
@@ -44,6 +44,9 @@ async function POST_handler(req: Request) {
 		return Response.json({ ok: true });
 	}
 	if (kind === "turn") {
+		// the chat must exist in the CALLER's data space (platform mode: a
+		// turn id is a chat id, and another user's chat reads as absent)
+		if (!chatStore.getChat(id)) return Response.json({ ok: false, reason: "not_running" }, { status: 409 });
 		const outcome = abortTurn(id);
 		if (!outcome.ok) return Response.json({ ok: false, reason: outcome.reason }, { status: 409 });
 		return Response.json({ ok: true });

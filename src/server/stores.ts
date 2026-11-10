@@ -15,10 +15,23 @@ import { resolveSettings, type EffectiveSettings } from "../core/settings-resolu
 import { syncCustomProvider } from "./custom-provider.ts";
 import vfs from "../store/vfs.ts";
 import { promptOverrideFs } from "../agent/prompt-segments.ts";
+import { extractionScope } from "../agent/subagents/extraction.ts";
+import { setEventScope } from "../core/events.ts";
+import { currentUser, dataSpaceOf, multiUser } from "../store/user-scope.ts";
 
 // Prompt overrides are written through the storage seam (store), so the
 // agent's reader must read through it too (Convex mode keeps them there).
 promptOverrideFs.current = vfs;
+
+// PLATFORM MODE (LH_MULTI_USER=1): the in-memory registries (extraction
+// runs) and the event bus learn whose data space the calling code runs
+// for, so one user never sees — or aborts — another user's activity.
+// Single-user mode installs nothing and both behave exactly as before.
+if (multiUser) {
+	const space = () => dataSpaceOf(currentUser()) ?? "owner";
+	extractionScope.current = space;
+	setEventScope(space);
+}
 /** The wired adapters. Satisfies core/graph.ts's GraphDeps structurally. */
 export const stores = {
 	chatStore,

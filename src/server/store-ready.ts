@@ -12,7 +12,7 @@
  */
 import { convexMode } from "../store/vfs.ts";
 import { storeReady as syncStore } from "../store/ready.ts";
-import { multiUser, runAsUser } from "../store/user-scope.ts";
+import { enterUser, multiUser, runAsUser } from "../store/user-scope.ts";
 import { initAuthEnv } from "./keys.ts";
 import { cookieValue, routeAccess, verifySession, type Session } from "./accounts.ts";
 
@@ -50,10 +50,24 @@ export function withStore<F extends (...args: never[]) => unknown>(fn: F): F {
 			if (access !== "public" && !session) return json(401, "Sign in to continue.", "auth_required");
 			if (access === "owner" && session?.role !== "owner") return json(403, "Only the platform owner can do this.", "owner_only");
 		}
-		const result = session ? await runAsUser(session, () => fn(...args)) : await fn(...args);
+		const result = session ? await runAsUser({ id: session.id, role: session.role }, () => fn(...args)) : await fn(...args);
 		// another instance may serve the next request: every write this one
 		// made must be in Convex before the reply leaves
 		await flushStore();
 		return result;
 	}) as unknown as F;
+}
+
+/** SERVER PAGES (platform mode). Call SYNCHRONOUSLY in the page body after
+ *  `await storeReady()`: it binds the rest of the render to the signed-in
+ *  user (AsyncLocalStorage.enterWith only reaches code that runs after it
+ *  in the SAME function, so it can't hide inside an awaited helper).
+ *  Returns false when the visitor must sign in first (the page redirects
+ *  to /login). Single-user mode: always true, binds nothing. */
+export function enterPageScope(token: string | undefined | null): boolean {
+	if (!multiUser) return true;
+	const session = verifySession(token);
+	if (!session) return false;
+	enterUser({ id: session.id, role: session.role });
+	return true;
 }

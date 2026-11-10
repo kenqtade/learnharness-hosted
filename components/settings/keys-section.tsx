@@ -36,6 +36,7 @@ import {
 } from "@/src/core";
 import { SettingsGroup } from "./controls.tsx";
 import { SubscriptionConnections } from "./subscription-connections.tsx";
+import { useMe } from "@/components/account/use-me";
 import { ClaudeCodeInstallationStatus } from "./claude-code-status.tsx";
 import { ProviderMenuList } from "./model-menu.tsx";
 import { MenuShell } from "@/components/menu-shell";
@@ -366,7 +367,25 @@ function AddProviderRow({
 	);
 }
 
-export function KeysSection({
+/** PLATFORM MODE (multi-user branch): providers, keys, subscriptions and
+ *  CLIs are platform-wide and owner-managed (the server refuses member
+ *  writes: routeAccess). Members see one plain notice instead of controls
+ *  that would only fail; the owner and single-user installs see the full
+ *  section, unchanged. */
+export function KeysSection(props: { initialRow?: string }) {
+	const me = useMe();
+	if (me?.multiUser && me.user?.role === "member") {
+		return (
+			<p className="text-sm text-muted-foreground" data-testid="keys-managed-by-owner">
+				Providers and API keys are managed by the platform owner and shared by every account. You can still choose which
+				models to use under Agent.
+			</p>
+		);
+	}
+	return <ProviderKeysSection {...props} />;
+}
+
+function ProviderKeysSection({
 	/** A deep-linked row to unfold on arrival (zero-keys wave): the
 	 *  dictation error's click lands here on DEEPGRAM_API_KEY. Followed
 	 *  while mounted too — the settings dialog's while-open retarget

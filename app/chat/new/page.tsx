@@ -1,4 +1,6 @@
-import { storeReady } from "@/src/server";
+import { enterPageScope } from "@/src/server";
+import { redirect } from "next/navigation";
+import { pageSessionToken } from "@/app/page-scope";
 import { NewSession } from "@/components/new-session";
 import { readSettingsRecord } from "@/src/server";
 import { slotsConfigured } from "@/src/core";
@@ -21,7 +23,8 @@ export default async function NewSessionPage({
 }: {
 	searchParams: Promise<{ mode?: string }>;
 }) {
-	const [{ mode }] = await Promise.all([searchParams, storeReady()]);
+	const [{ mode }, token] = await Promise.all([searchParams, pageSessionToken()]);
+	if (!enterPageScope(token)) redirect("/login");
 	return (
 		<NewSession
 			initialConfigured={slotsConfigured(readSettingsRecord()?.models)}

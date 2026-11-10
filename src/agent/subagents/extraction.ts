@@ -659,6 +659,9 @@ export interface RunningExtraction {
 	/** True-cancellation handle (the dock's abort button): one controller per
 	 *  run, shared across phases; abort() cancels the in-flight model call. */
 	controller: AbortController;
+	/** The data space that started the run (platform mode; null = single
+	 *  user). See extractionScope. */
+	scope?: string | null;
 }
 
 interface LhExtractionGlobal {
@@ -695,9 +698,43 @@ function runs(): NonNullable<LhExtractionGlobal["__lhExtractionRuns"]> {
 	return (g.__lhExtractionRuns ??= { running: new Map(), inFlight: new Set(), lastStartedAt: 0 });
 }
 
+/** PLATFORM MODE (multi-user branch): whose data space the calling code
+ *  runs for. The server wires the resolver (src/server/stores.ts); the
+ *  agent layer may not import the store, hence the {current} hook. null =
+ *  single user: the registries behave exactly as before. In platform mode
+ *  every registry key is prefixed with the space (two users importing the
+ *  same file path must not share a single-flight slot or a feed row) and
+ *  every listing/abort sees only the caller's own runs. */
+export const extractionScope: { current: () => string | null } = { current: () => null };
+
+const scopedKey = (key: string): string => {
+	const scope = extractionScope.current();
+	return scope === null ? key : `${scope}\u0000${key}`;
+};
+/** The pipeline's view of a registry: same API, keys scoped per space. */
+function scopedMap<V>(map: Map<string, V>) {
+	return {
+		get: (k: string) => map.get(scopedKey(k)),
+		set: (k: string, v: V) => map.set(scopedKey(k), v),
+		delete: (k: string) => map.delete(scopedKey(k)),
+		has: (k: string) => map.has(scopedKey(k)),
+	};
+}
+function scopedSet(set: Set<string>) {
+	return {
+		has: (k: string) => set.has(scopedKey(k)),
+		add: (k: string) => set.add(scopedKey(k)),
+		delete: (k: string) => set.delete(scopedKey(k)),
+	};
+}
+const visible = (run: RunningExtraction): boolean => {
+	const scope = extractionScope.current();
+	return scope === null || run.scope === undefined || run.scope === null || run.scope === scope;
+};
+
 /** In-flight pipeline runs (oldest first) — the /api/graph/status payload. */
 export function extractionStatuses(): RunningExtraction[] {
-	return [...runs().running.values()].sort((a, b) => a.startedAt - b.startedAt);
+	return [...runs().running.values()].filter(visible).sort((a, b) => a.startedAt - b.startedAt);
 }
 
 /** True cancellation of the in-flight run for a chat (the dock's abort
@@ -711,7 +748,7 @@ export function abortExtraction(chatId: string): boolean {
 	// job of its fan-out.
 	let found = false;
 	for (const run of runs().running.values()) {
-		if (run.chatId !== chatId) continue;
+		if (run.chatId !== chatId || !visible(run)) continue;
 		run.controller.abort();
 		found = true;
 	}
@@ -838,8 +875,8 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	// THE SHARED REGISTRIES (runs() above — globalThis): every pipeline
 	// instance (route entries in dev, tests) sees the same runs, the same
 	// single-flight guard. No module-level state left in this factory.
-	const runningExtractions = runs().running;
-	const inFlight = runs().inFlight;
+	const runningExtractions = scopedMap(runs().running);
+	const inFlight = scopedSet(runs().inFlight);
 
 	function setPhase(
 		jobKey: string,
@@ -860,6 +897,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			startedAt: prev?.startedAt ?? R.lastStartedAt,
 			usage: prev?.usage ?? {}, // phase changes never lose usage
 			controller: prev?.controller ?? new AbortController(),
+			scope: prev?.scope ?? extractionScope.current(),
 		});
 		// Every phase transition announces the dock (push S5, 2026-10-02):
 		// notify-after-write — the registry is the feed's truth.

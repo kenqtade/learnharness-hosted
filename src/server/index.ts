@@ -54,6 +54,12 @@ export { claudeCodeInstallationResponse } from "./claude-code.ts";
 // No import side effects; the boot sync lives in stores.ts.
 export * from "./custom-provider.ts";
 export { customProviderGet, customProviderMutation } from "./custom-provider-http.ts";
-export { flushStore, storeReady, withStore } from "./store-ready.ts";
+export { enterPageScope, flushStore, requestSession, storeReady, withStore } from "./store-ready.ts";
+// Platform mode (multi-user branch): accounts, sessions, invites, the
+// route access policy, and the HTTP bodies of /api/auth, /api/account,
+// /api/admin.
+export * from "./accounts.ts";
+export * from "./accounts-http.ts";
+export { currentUser, multiUser } from "../store/user-scope.ts";
 export { keepAlive } from "./keep-alive.ts";
 export { capabilityReport } from "./capabilities.ts";
