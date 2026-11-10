@@ -23,7 +23,7 @@ function build(mergeExit: number, env: Record<string, string> = { LH_AUTO_UPDATE
 	stub("npx", opts.tscFails ? `case "$*" in *tsc*) exit 1;; esac; exit 0` : "exit 0");
 	const r = spawnSync("bash", [path.join(t, "scripts", "vercel-build.sh")], {
 		encoding: "utf-8",
-		env: { PATH: `${path.join(t, "bin")}:/usr/bin:/bin`, ...env },
+		env: { PATH: `${path.join(t, "bin")}:/usr/bin:/bin`, ...env } as NodeJS.ProcessEnv,
 	});
 	const calls = fs.existsSync(path.join(t, "calls")) ? fs.readFileSync(path.join(t, "calls"), "utf-8") : "";
 	fs.rmSync(t, { recursive: true, force: true });
