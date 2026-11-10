@@ -31,6 +31,7 @@ import {
 } from "./jobs.ts";
 import { runPiTurn, type PiTurnSpec } from "./pi/ui-stream.ts";
 import { dispatchInternal, dispatchTarget, verifyEnvelope } from "./internal-dispatch.ts";
+import { remainingInvocationBudget } from "./invocation-clock.ts";
 import { getAccount } from "./accounts.ts";
 import { runAsUser, multiUser } from "../store/user-scope.ts";
 import { storeReady as syncStoreNow } from "../store/vfs.ts";
@@ -125,7 +126,7 @@ export function turnBudgetMs(env: Record<string, string | undefined> = process.e
 
 /** The learner-facing text of a turn stopped at its deadline. */
 export function outOfTimeTurnText(budgetMs: number): string {
-	return `This reply ran out of time: the model had not finished after ${Math.round(budgetMs / 1000)} s, so the turn was stopped before the server's time limit. Send your message again, or pick a faster model in Settings.`;
+	return `This reply ran out of time: the model had not finished within the server's ${Math.round(budgetMs / 1000)} s time budget, so the turn was stopped before the hard limit. Send your message again, or pick a faster model in Settings.`;
 }
 
 /** Turn the aborted tail of a deadline-stopped turn into an explained
@@ -134,10 +135,12 @@ export function outOfTimeTurnText(budgetMs: number): string {
 export function markTurnOutOfTime<T>(messages: readonly T[], baseCount: number, budgetMs: number): T[] {
 	const out = [...messages];
 	const text = outOfTimeTurnText(budgetMs);
-	for (let i = out.length - 1; i >= baseCount; i--) {
-		const m = out[i] as { role?: string };
-		if (m?.role !== "assistant") continue;
-		out[i] = { ...(out[i] as object), stopReason: "error", errorMessage: text } as T;
+	// Only the TAIL is rewritten: when the turn ended on a tool result (the
+	// next model call is what hung), an explained reply is appended instead,
+	// so the record always ends on the learner-facing error.
+	const tail = out.length - 1;
+	if (tail >= baseCount && (out[tail] as { role?: string })?.role === "assistant") {
+		out[tail] = { ...(out[tail] as object), stopReason: "error", errorMessage: text } as T;
 		return out;
 	}
 	const last = [...out].reverse().find((m) => (m as { role?: string }).role === "assistant") as Record<string, unknown> | undefined;
@@ -182,7 +185,13 @@ const jobRunner = createJobRunner({
 	chatStore: stores.chatStore,
 	jobStore: stores.jobStore,
 	deliver: deliverResult,
-	budgetMs: () => jobBudgetMs(),
+	// What is left of the job budget in THIS invocation: a dispatched job
+	// starts a fresh one (≈ the whole budget); the in-process fallback gets
+	// only what the triggering request left.
+	budgetMs: () => {
+		const budget = jobBudgetMs();
+		return budget ? remainingInvocationBudget(budget, Date.now(), 5_000) : undefined;
+	},
 	redispatch: (jobId) => startJob(jobId),
 	// BYOK (owner, 2026-09-22): job engines resolve the chain — role
 	// override → slot → NOTHING — read FRESH per job (a settings PUT
@@ -951,11 +960,14 @@ export async function handleChatInput(
 		// microtasks, so settle (and thus unregister) cannot beat us here.
 		registerTurn(chatId, handle);
 		if (turnBudget) {
+			// Measured against the INVOCATION's start (compaction, store sync
+			// or an earlier turn in the same invocation already used some).
+			const left = remainingInvocationBudget(turnBudget);
 			turnDeadlineTimer = setTimeout(() => {
 				turnDeadlineHit = true;
-				console.error(`[chat ${chatId}] turn out of time after ${turnBudget} ms — stopping it before the host's wall`);
+				console.error(`[chat ${chatId}] turn out of time (${left} ms left of the ${turnBudget} ms invocation budget) — stopping it before the host's wall`);
 				handle.abort();
-			}, turnBudget);
+			}, left);
 			(turnDeadlineTimer as { unref?: () => void }).unref?.();
 		}
 		// CONNECTION DIET B (owner, 2026-10-10 — the parallel-session freeze

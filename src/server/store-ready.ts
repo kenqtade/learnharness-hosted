@@ -14,6 +14,7 @@ import { convexMode } from "../store/vfs.ts";
 import { storeReady as syncStore } from "../store/ready.ts";
 import { enterUser, multiUser, runAsUser } from "../store/user-scope.ts";
 import { initAuthEnv } from "./keys.ts";
+import { runWithInvocationClock } from "./invocation-clock.ts";
 import { cookieValue, routeAccess, verifySession, type Session } from "./accounts.ts";
 
 import { flushStore } from "../store/ready.ts";
@@ -39,7 +40,7 @@ const json = (status: number, error: string, code: string) =>
  *  stay sync. */
 export function withStore<F extends (...args: never[]) => unknown>(fn: F): F {
 	if (!convexMode && !multiUser) return fn;
-	return (async (...args: Parameters<F>) => {
+	return ((...args: Parameters<F>) => runWithInvocationClock(async () => {
 		await storeReady();
 		let session: Session | null = null;
 		if (multiUser) {
@@ -55,7 +56,7 @@ export function withStore<F extends (...args: never[]) => unknown>(fn: F): F {
 		// made must be in Convex before the reply leaves
 		await flushStore();
 		return result;
-	}) as unknown as F;
+	})) as unknown as F;
 }
 
 /** SERVER PAGES (platform mode). Call SYNCHRONOUSLY in the page body after

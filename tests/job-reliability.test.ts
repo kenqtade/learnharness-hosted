@@ -28,6 +28,7 @@ import { recoverStaleJobs, setJobRespawn } from "../src/server/jobs.ts";
 import { dispatchTarget, signEnvelope, verifyEnvelope } from "../src/server/internal-dispatch.ts";
 import { handleChatRequest, jobBudgetMs, markTurnOutOfTime, outOfTimeTurnText, turnBudgetMs } from "../src/server/chat-handler.ts";
 import { runningTurn } from "../src/server/turn-runs.ts";
+import { invocationStartedAt, remainingInvocationBudget, runWithInvocationClock } from "../src/server/invocation-clock.ts";
 import { createTeacherAgent } from "../src/agent/teacher-agent.ts";
 import type { PiEngine } from "../src/agent/models.ts";
 
@@ -264,6 +265,21 @@ describe("internal dispatch envelopes", () => {
 });
 
 describe("turn deadline", () => {
+	it("the invocation clock: deadlines count from the request start and survive awaits", async () => {
+		assert.equal(invocationStartedAt(), undefined);
+		assert.equal(remainingInvocationBudget(10_000), 10_000, "outside a request: the whole budget");
+		const start = Date.now() - 4_000; // the request began 4 s ago (e.g. compaction ran first)
+		await runWithInvocationClock(async () => {
+			await new Promise((r) => setTimeout(r, 5));
+			assert.equal(invocationStartedAt(), start);
+			const left = remainingInvocationBudget(10_000);
+			assert.ok(left <= 6_000 && left > 5_000, `left ${left}`);
+			assert.equal(remainingInvocationBudget(3_000), 1_000, "floored, never negative");
+			// Background work started inside inherits the clock.
+			await new Promise<void>((resolve) => setTimeout(() => { assert.equal(invocationStartedAt(), start); resolve(); }, 5));
+		}, start);
+	});
+
 	it("budgets: Vercel defaults, env overrides, none locally", () => {
 		assert.equal(turnBudgetMs({ VERCEL: "1" }), 270_000);
 		assert.equal(turnBudgetMs({ VERCEL: "1", LH_TURN_BUDGET_MS: "1000" }), 1_000);
@@ -279,11 +295,21 @@ describe("turn deadline", () => {
 		const marked = markTurnOutOfTime([user, aborted], 1, 270_000) as Array<Record<string, unknown>>;
 		assert.equal(marked[1]!.stopReason, "error");
 		assert.equal(marked[1]!.errorMessage, outOfTimeTurnText(270_000));
-		assert.match(String(marked[1]!.errorMessage), /ran out of time.*270 s/);
+		assert.match(String(marked[1]!.errorMessage), /ran out of time.*270 s time budget/);
 		const synthesized = markTurnOutOfTime([user], 1, 1_000) as Array<Record<string, unknown>>;
 		assert.equal(synthesized.length, 2);
 		assert.equal(synthesized[1]!.role, "assistant");
 		assert.equal(synthesized[1]!.stopReason, "error");
+		// A turn that ended on a tool result gets an appended explained reply;
+		// the earlier tool-call message keeps its own stop reason.
+		const toolUse = { role: "assistant", content: [], stopReason: "toolUse", provider: "nvidia", model: "m", api: "openai-completions" };
+		const toolResult = { role: "toolResult", toolCallId: "t1", content: [] };
+		const appended = markTurnOutOfTime([user, toolUse, toolResult], 1, 1_000) as Array<Record<string, unknown>>;
+		assert.equal(appended.length, 4);
+		assert.equal(appended[1]!.stopReason, "toolUse");
+		assert.equal(appended[3]!.role, "assistant");
+		assert.equal(appended[3]!.stopReason, "error");
+		assert.equal(appended[3]!.provider, "nvidia");
 		// Earlier (base) assistant messages are never rewritten.
 		const base = markTurnOutOfTime([aborted, user], 1, 1_000) as Array<Record<string, unknown>>;
 		assert.equal(base[0]!.stopReason, "aborted");
