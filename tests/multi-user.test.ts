@@ -274,3 +274,24 @@ test("the extraction registry is filtered per data space", () => {
 	assert.equal(as(alice, () => abortExtraction("c1")), true);
 	g.__lhExtractionRuns!.running.clear();
 });
+
+test("a memorable shareable invite: owner-chosen code, several uses, any letter case", () => {
+	assert.equal(accounts.createCustomInvite(owner.id, { code: "no spaces!" }).ok, false, "code rule");
+	assert.equal(accounts.createCustomInvite(owner.id, { code: "EARLY-OK", maxUses: 0 }).ok, false, "uses 1..1000");
+	const inv = must(accounts.createCustomInvite(owner.id, { code: "EARLY-ACCESS-TEST", maxUses: 2, days: 30, note: "early testers" }));
+	assert.equal(inv.maxUses, 2);
+	assert.ok(Date.parse(inv.expiresAt) - Date.now() > 29 * 24 * 3600 * 1000);
+	const dupe = accounts.createCustomInvite(owner.id, { code: "early-access-test" });
+	assert.equal(dupe.ok, false, "codes are unique ignoring case");
+	if (!dupe.ok) assert.equal(dupe.status, 409);
+	const e1 = must(accounts.signup({ username: "early1", password: "password-e1", inviteCode: " early-access-test " }));
+	const e2 = must(accounts.signup({ username: "early2", password: "password-e2", inviteCode: "Early-Access-Test" }));
+	assert.equal(accounts.signup({ username: "early3", password: "password-e3", inviteCode: "EARLY-ACCESS-TEST" }).ok, false, "only 2 uses");
+	const stored = accounts.listInvites().find((i) => i.code === "EARLY-ACCESS-TEST")!;
+	assert.equal(stored.useCount, 2);
+	assert.equal(accounts.inviteOpen(stored), false);
+	const single = must(accounts.createCustomInvite(owner.id, { code: "JUST-ONE" }));
+	assert.equal(single.maxUses, undefined, "1 use = classic single-use invite");
+	assert.ok(accounts.revokeInvite("EARLY-ACCESS-TEST") && accounts.revokeInvite("JUST-ONE"));
+	for (const u of [e1, e2]) accounts.deleteAccount(u.id);
+});

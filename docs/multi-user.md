@@ -16,8 +16,16 @@ single-user app, byte-for-byte; the full test suite runs in that mode.
 
 - Sign-in is **username + password**. Usernames are 3–32 characters
   (letters, numbers, dot, dash, underscore) and case-insensitive.
-- Invites work **once** and expire after **14 days**. The owner can
-  instead allow open sign-ups (Admin → Sign-ups), so no invite is needed.
+- A plain invite (Admin → Create invite) is a random code that works
+  **once** and expires after **14 days**.
+- **Shareable codes:** type your own code into "Own code" (e.g.
+  `EARLY-ACCESS-2026`, 4–40 letters, digits or dashes) and set how many
+  people may use it. That gives one easy code to send to a group. Upper and
+  lower case don't matter, and spaces around a pasted code are ignored. The
+  admin list shows "3/25 used". Revoke it at any time. Through the API:
+  `POST /api/admin/invites {"code":"EARLY-ACCESS-2026","maxUses":25,"days":60}`.
+- The owner can instead allow open sign-ups (Admin → Sign-ups), so no
+  invite is needed.
 - Members start with the owner's model choices, and can pick their own
   under Settings → Agent. That changes only their copy.
 - Members see "Providers and API keys are managed by the platform owner"

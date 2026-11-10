@@ -11,7 +11,8 @@ import { Input } from "@/components/ui/input";
 import { sendJson, type MeUser } from "@/components/account/use-me";
 import { Notice, PageFrame, Section } from "@/components/account/account-panel";
 
-interface Invite { code: string; createdAt: string; expiresAt: string; note?: string; usedBy?: string; usedAt?: string }
+interface Invite { code: string; createdAt: string; expiresAt: string; note?: string; usedBy?: string; usedAt?: string; maxUses?: number; useCount?: number }
+const inviteOpen = (i: Invite) => Date.parse(i.expiresAt) > Date.now() && (i.maxUses ? (i.useCount ?? 0) < i.maxUses : !i.usedBy);
 
 const when = (iso?: string) => (iso ? new Date(iso).toLocaleString() : "—");
 
@@ -20,6 +21,8 @@ export function AdminPanel() {
 	const [invites, setInvites] = useState<Invite[]>([]);
 	const [openSignups, setOpenSignups] = useState(false);
 	const [note, setNote] = useState("");
+	const [customCode, setCustomCode] = useState("");
+	const [maxUses, setMaxUses] = useState("1");
 	const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 	const [copied, setCopied] = useState<string | null>(null);
 
@@ -52,9 +55,13 @@ export function AdminPanel() {
 	}
 	async function invite(e: FormEvent) {
 		e.preventDefault();
-		const { ok, data } = await sendJson<{ invite: Invite }>("/api/admin/invites", "POST", { note });
+		const { ok, data } = await sendJson<{ invite: Invite }>("/api/admin/invites", "POST", customCode.trim() ? { note, code: customCode.trim(), maxUses: Number(maxUses) || 1 } : { note });
 		report(ok, data, "Invite created. Copy the link and send it.");
-		setNote("");
+		if (ok) {
+			setNote("");
+			setCustomCode("");
+			setMaxUses("1");
+		}
 		await load();
 	}
 	async function revoke(code: string) {
@@ -75,8 +82,8 @@ export function AdminPanel() {
 	}
 
 	const name = (id?: string) => users.find((u) => u.id === id)?.name ?? "a deleted account";
-	const pending = invites.filter((i) => !i.usedBy && Date.parse(i.expiresAt) > Date.now());
-	const used = invites.filter((i) => i.usedBy);
+	const pending = invites.filter(inviteOpen);
+	const used = invites.filter((i) => i.usedBy && !i.maxUses);
 
 	return (
 		<PageFrame title="Admin" subtitle="Manage who can use this platform. API keys and providers (Settings → Providers) are shared by every account.">
@@ -113,6 +120,8 @@ export function AdminPanel() {
 			<Section title="Invites" description="Each invite link works once and expires after 14 days.">
 				<form onSubmit={invite} className="flex gap-3">
 					<Input placeholder="Who is it for? (optional)" value={note} onChange={(e) => setNote(e.target.value)} data-testid="admin-invite-note" />
+					<Input placeholder="Own code, e.g. EARLY-ACCESS (optional)" value={customCode} onChange={(e) => setCustomCode(e.target.value)} data-testid="admin-invite-custom" />
+					{customCode.trim() && <Input type="number" min={1} max={1000} title="How many people can use this code" aria-label="Uses" className="w-24" value={maxUses} onChange={(e) => setMaxUses(e.target.value)} data-testid="admin-invite-uses" />}
 					<Button type="submit" className="cursor-pointer" data-testid="admin-invite-create">Create invite</Button>
 				</form>
 				<ul className="mt-4 flex flex-col gap-2" data-testid="admin-invites">
@@ -120,7 +129,7 @@ export function AdminPanel() {
 						<li key={i.code} className="flex flex-wrap items-center gap-2 rounded-md border border-border px-3 py-2 text-xs">
 							<code className="font-mono" data-testid="admin-invite-code">{i.code}</code>
 							{i.note && <span className="text-muted-foreground">· {i.note}</span>}
-							<span className="text-muted-foreground">· expires {when(i.expiresAt)}</span>
+							<span className="text-muted-foreground">{i.maxUses ? `· ${i.useCount ?? 0}/${i.maxUses} used ` : ""}· expires {when(i.expiresAt)}</span>
 							<span className="ml-auto flex gap-2">
 								<Button size="xs" variant="outline" className="cursor-pointer" onClick={() => void copy(i.code)}>{copied === i.code ? "Copied" : "Copy link"}</Button>
 								<Button size="xs" variant="ghost" className="cursor-pointer" onClick={() => void revoke(i.code)}>Revoke</Button>

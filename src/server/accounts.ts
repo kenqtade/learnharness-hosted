@@ -48,7 +48,20 @@ export interface Account {
 	disabled?: boolean;
 }
 export type PublicAccount = Omit<Account, "passwordHash" | "sessionVersion">;
-export interface Invite { code: string; createdBy: string; createdAt: string; expiresAt: string; note?: string; usedBy?: string; usedAt?: string }
+/** `maxUses` absent = classic single-use invite (closed once `usedBy` is set).
+ *  `maxUses` set = a shareable code (e.g. one early-access code sent to a
+ *  group); `useCount` counts sign-ups and `usedBy`/`usedAt` record the latest. */
+export interface Invite { code: string; createdBy: string; createdAt: string; expiresAt: string; note?: string; usedBy?: string; usedAt?: string; maxUses?: number; useCount?: number }
+
+/** Still accepts sign-ups: not expired and uses left. */
+export function inviteOpen(i: Invite, now = Date.now()): boolean {
+	if (Date.parse(i.expiresAt) <= now) return false;
+	return i.maxUses ? (i.useCount ?? 0) < i.maxUses : !i.usedBy;
+}
+/** Codes are compared without case or surrounding spaces, so a code typed
+ *  from a message ("early-access-2026") still works. */
+const sameCode = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+export const CUSTOM_CODE_RULE = "4–40 letters, digits or dashes";
 interface PlatformConfig { openSignups?: boolean }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string; status: number };
@@ -179,7 +192,7 @@ export function signup(input: { username?: unknown; password?: unknown; name?: u
 		role = "owner";
 	} else if (readConfig().openSignups !== true) {
 		const code = typeof input.inviteCode === "string" ? input.inviteCode.trim() : "";
-		invite = invites.find((i) => i.code === code && !i.usedBy && Date.parse(i.expiresAt) > Date.now());
+		invite = invites.find((i) => sameCode(i.code, code) && inviteOpen(i));
 		if (!code || !invite) return fail("A valid invite code is required to create an account.", 403);
 	}
 	const now = new Date().toISOString();
@@ -189,6 +202,7 @@ export function signup(input: { username?: unknown; password?: unknown; name?: u
 	};
 	writeUsers([...users, account]);
 	if (invite) {
+		if (invite.maxUses) invite.useCount = (invite.useCount ?? 0) + 1;
 		invite.usedBy = account.id;
 		invite.usedAt = now;
 		writeInvites(invites);
@@ -282,6 +296,26 @@ export function createInvite(createdBy: string, note?: unknown): Invite {
 	// keep the list tidy: drop expired, unused invites
 	writeInvites([...invites.filter((i) => i.usedBy || Date.parse(i.expiresAt) > now), invite]);
 	return invite;
+}
+/** An invite with an owner-chosen, memorable code and optionally several
+ *  uses and a custom lifetime (1–365 days, default 14). */
+export function createCustomInvite(createdBy: string, opts: { code?: unknown; note?: unknown; maxUses?: unknown; days?: unknown }): Result<Invite> {
+	const code = typeof opts.code === "string" ? opts.code.trim() : "";
+	if (!/^[A-Za-z0-9][A-Za-z0-9-]{2,38}[A-Za-z0-9]$/.test(code)) return fail(`Invite codes are ${CUSTOM_CODE_RULE}.`, 400);
+	const maxUses = opts.maxUses === undefined ? 1 : Number(opts.maxUses);
+	if (!Number.isInteger(maxUses) || maxUses < 1 || maxUses > 1000) return fail("Uses must be a whole number from 1 to 1000.", 400);
+	const days = opts.days === undefined ? 14 : Number(opts.days);
+	if (!Number.isFinite(days) || days < 1 || days > 365) return fail("Lifetime must be 1 to 365 days.", 400);
+	const invites = readInvites();
+	const now = Date.now();
+	if (invites.some((i) => sameCode(i.code, code) && Date.parse(i.expiresAt) > now)) return fail("That invite code already exists.", 409);
+	const invite: Invite = {
+		code, createdBy, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + days * 24 * 3600 * 1000).toISOString(),
+		...(typeof opts.note === "string" && opts.note.trim() ? { note: opts.note.trim().slice(0, 80) } : {}),
+		...(maxUses > 1 ? { maxUses, useCount: 0 } : {}),
+	};
+	writeInvites([...invites.filter((i) => i.usedBy || Date.parse(i.expiresAt) > now), invite]);
+	return { ok: true, value: invite };
 }
 export function revokeInvite(code: string): boolean {
 	const invites = readInvites();

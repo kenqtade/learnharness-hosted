@@ -10,7 +10,7 @@
  */
 import { multiUser } from "../store/user-scope.ts";
 import {
-	changePassword, clearSessionCookie, createInvite, deleteAccount, issueSession, listAccounts, listInvites,
+	changePassword, clearSessionCookie, createCustomInvite, createInvite, deleteAccount, issueSession, listAccounts, listInvites,
 	login, platformState, publicAccount, revokeInvite, sessionCookie, setDisabled, setOpenSignups, signOutEverywhere,
 	signup, updateProfile, verifySession, cookieValue, type Account, type Result,
 } from "./accounts.ts";
@@ -115,7 +115,7 @@ export async function adminUsersResponse(req: Request): Promise<Response> {
 	return err(405, "Unsupported request.");
 }
 
-/** GET list · POST {note?} → new code · DELETE ?code=. */
+/** GET list · POST {note?, code?, maxUses?, days?} → new code · DELETE ?code=. */
 export async function adminInvitesResponse(req: Request): Promise<Response> {
 	if (!multiUser) return off();
 	const method = req.method.toUpperCase();
@@ -123,6 +123,12 @@ export async function adminInvitesResponse(req: Request): Promise<Response> {
 	if (method === "POST") {
 		const session = actor(req);
 		const b = await body(req);
+		// {code} = a memorable owner-chosen code (optionally {maxUses, days});
+		// without it, a random single-use code as before.
+		if (b.code !== undefined) {
+			const r = createCustomInvite(session?.id ?? "owner", { code: b.code, note: b.note, maxUses: b.maxUses, days: b.days });
+			return r.ok ? ok({ invite: r.value }, { status: 201 }) : err(r.status, r.error);
+		}
 		return ok({ invite: createInvite(session?.id ?? "owner", b.note) }, { status: 201 });
 	}
 	if (method === "DELETE") {
