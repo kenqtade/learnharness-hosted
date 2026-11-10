@@ -38,6 +38,7 @@ import {
 	clampChatLevel,
 	clampModelsLevels,
 	effectiveSettings,
+	fileAccessConfigurationError,
 	promptOverrides,
 	readSettingsRecord,
 	validateChatSettings,
@@ -129,8 +130,9 @@ async function PUT_handler(request: Request, ctx: { params: Promise<{ section: s
 	// Read-modify-write ONE section of the record; everything else rides
 	// along untouched (other sections, unknown keys — sanitize preserves).
 	const next = { ...record, [section]: sectionOut };
-	writeSettingsRecord(next);
-	return Response.json({ settings: next });
+	const stored = writeSettingsRecord(next);
+	const fileAccessError = fileAccessConfigurationError();
+	return Response.json({ settings: stored, ...(fileAccessError ? { fileAccessError } : {}) });
 }
 
 // convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)

@@ -22,6 +22,7 @@
  */
 import realFs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../convex/_generated/api.js";
 import { AUTH_FILE, PATHS } from "../../config.ts";
@@ -418,12 +419,146 @@ function chmodSync(p: realFs.PathLike, mode: realFs.Mode): void {
 	// modes have no meaning in Convex; access is gated by LH_CONVEX_SECRET
 }
 
+// ─── stat probes (upstream file-access wave's first-boot check) ─────────
+
+/** True when the seam (Convex) owns this path: real-disk probes mean
+ *  nothing for it — a missing record is simply "not written yet". */
+export function seamManaged(p: realFs.PathLike): boolean {
+	return convexMode && target(String(p)).key !== null;
+}
+/** Real-disk probes at the path's real location (a member's space maps). */
+function lstatSync(p: realFs.PathLike): realFs.Stats {
+	return realFs.lstatSync(target(String(p)).real);
+}
+function statSync(p: realFs.PathLike): realFs.Stats {
+	return realFs.statSync(target(String(p)).real);
+}
+function accessSync(p: realFs.PathLike, mode?: number): void {
+	realFs.accessSync(target(String(p)).real, mode);
+}
+const constants = realFs.constants;
+
+// ─── crash-safe replacement (upstream #403, routed through the seam) ─────
+
+/** writeFileAtomicSync (see atomic-write.ts): seam-managed paths save
+ *  through the seam; other paths use upstream's temp+fsync+rename. */
+function writeFileAtomicSync(file: string, text: string, options?: { mode?: number; allowInPlaceFallback?: boolean }): void {
+	const t = target(String(file));
+	if (convexMode && t.key !== null) return writeFileSync(file, text);
+	ensureParent(t);
+	// Unscoped paths go to the algorithm exactly as given (test fault hooks match on them).
+	realWriteFileAtomicSync(t.scoped ? t.real : file, text, options);
+}
+function removeLeftoverTemps(file: string): void {
+	const t = target(String(file));
+	if (convexMode && t.key !== null) return; // seam writes never leave temps
+	realRemoveLeftoverTemps(t.scoped ? t.real : file);
+}
+
+const TEMP_MARKER = ".tmp-";
+const RENAME_RETRY_MS = 100;
+
+/** Replace `file` with `text` (UTF-8). Throws on failure, with the old file
+ *  untouched, except when the in-place fallback fails midway: then the temp
+ *  file beside it keeps the complete new bytes. */
+function realWriteFileAtomicSync(file: string, text: string, options?: { mode?: number; allowInPlaceFallback?: boolean }): void {
+	const tmp = `${file}${TEMP_MARKER}${randomUUID()}`;
+	let target: number;
+	try {
+		const fd = realFs.openSync(tmp, "wx", options?.mode ?? 0o666);
+		try {
+			if (options?.mode !== undefined) realFs.fchmodSync(fd, options.mode); // umask may have cleared bits of the create mode
+			realFs.writeFileSync(fd, text, "utf-8");
+			realFs.fsyncSync(fd);
+		} finally {
+			realFs.closeSync(fd);
+		}
+		// `file` goes to renameSync exactly as given: test fault hooks match on it.
+		if (renameRetryingSync(tmp, file, options?.allowInPlaceFallback ?? false)) return;
+		target = realFs.openSync(file, "w"); // held past the retry: save in place, as before #403
+	} catch (error) {
+		removeTemp(tmp); // the target was not touched
+		throw error;
+	}
+	try {
+		realFs.writeFileSync(target, text, "utf-8"); // if this fails, the temp is kept: it is the only complete copy
+	} finally {
+		realFs.closeSync(target);
+	}
+	console.warn(`[store] ${file} is held open by another program; saved it in place`);
+	removeTemp(tmp);
+}
+
+/** Delete temp files that crashes left beside `file`. Call it after deleting `file`,
+ *  or leftovers would keep the deleted record's newest bytes on disk. */
+function realRemoveLeftoverTemps(file: string): void {
+	const prefix = `${path.basename(file)}${TEMP_MARKER}`;
+	let names: string[];
+	try {
+		names = realFs.readdirSync(path.dirname(file));
+	} catch (error) {
+		// No folder means no leftovers. Anything else is reported, not thrown:
+		// the record itself is already deleted.
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn(`[store] could not look for temp files beside ${file}:`, error);
+		return;
+	}
+	for (const name of names) if (name.startsWith(prefix)) removeTemp(path.join(path.dirname(file), name));
+}
+
+/** True when the rename landed. False only when the caller allows the
+ *  Windows compatibility fallback and sharing violations outlast the retry. */
+function renameRetryingSync(tmp: string, file: string, allowInPlaceFallback: boolean): boolean {
+	const deadline = Date.now() + RENAME_RETRY_MS;
+	for (let delay = 5; ; delay = Math.min(delay * 2, 40)) {
+		try {
+			realFs.renameSync(tmp, file);
+			return true;
+		} catch (error) {
+			if (!isSharingViolation(error, file)) throw error;
+			if (Date.now() >= deadline) {
+				// Opening a symlink with "w" would truncate its referent instead of
+				// replacing the named path. Retrying may succeed; fallback must not.
+				if (allowInPlaceFallback && !realFs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) return false;
+				throw error;
+			}
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay); // sleep without spinning
+		}
+	}
+}
+
+/** Windows rename errors that held handles explain (on the target, or on
+ *  the fresh temp file when scanners open it). Read-only files or folders
+ *  at the target fail the same way, but waiting can't fix those. */
+function isSharingViolation(error: unknown, file: string): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (process.platform !== "win32" || (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY")) return false;
+	let stat: realFs.Stats | undefined;
+	try {
+		stat = realFs.statSync(file, { throwIfNoEntry: false });
+	} catch {
+		return false; // can't tell: report the rename error itself
+	}
+	if (!stat) return true; // no target yet: the handle is on the temp file
+	return stat.isFile() && (stat.mode & 0o200) !== 0;
+}
+
+function removeTemp(tmp: string): void {
+	try {
+		realFs.unlinkSync(tmp); // not rmSync: on Node 25 for Windows it silently skips paths with non-ASCII characters
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn(`[store] could not remove temp file ${tmp}:`, error); // harmless: listings skip it
+	}
+}
+
 const vfs = {
 	existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync,
 	readdirSync, renameSync, unlinkSync, rmSync, chmodSync,
+	lstatSync, statSync, accessSync, constants,
 };
 export {
 	existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync,
 	readdirSync, renameSync, unlinkSync, rmSync, chmodSync,
+	writeFileAtomicSync, removeLeftoverTemps,
+	lstatSync, statSync, accessSync, constants,
 };
 export default vfs;

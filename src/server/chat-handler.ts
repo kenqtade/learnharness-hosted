@@ -30,6 +30,8 @@ import {
 import { runPiTurn, type PiTurnSpec } from "./pi/ui-stream.ts";
 import { durableRuntime, durableRuntimeSelected, setDurableRecoverer } from "./durable/harness.ts";
 import { startDurableTurn, type DurableAgentKind, type DurableTurnPlan } from "./durable/turn.ts";
+import { setFileAccessPolicy } from "../agent/tools/file-access.ts";
+import { fileAccessPolicy } from "./file-access.ts";
 import { collectToolCallIds } from "./pi/call-ids.ts";
 import { providerEventNote } from "../agent/provider-events.ts";
 import { effectiveSettings, stores } from "./stores.ts";
@@ -163,6 +165,10 @@ function retentionForSlot(slot: ModelSlotName) {
 }
 
 setJobRespawn((jobId) => void keepAlive(jobRunner.runJob(jobId)));
+// The learner-filesystem policy (file-access wave): every tool registry is
+// built in this composition root, so the seam is installed here — the
+// tools read it fresh per call (allowed folders + the app's private paths).
+setFileAccessPolicy(fileAccessPolicy);
 
 /** The route-facing entry: parse {chatId, input} and run one turn. */
 /** The conversation agent for a chat (prober / teacher / practitioner) —
@@ -583,7 +589,7 @@ export async function handleChatInput(
 		});
 	};
 
-	// AGENT CONSTRUCTION BRANCH (docs/probe-teach-split.md §2): the transcript
+	// AGENT CONSTRUCTION BRANCH (docs/archive/probe-teach-split.md §2): the transcript
 	// is the seam — a probe_done call in the record means the probe is
 	// concluded: build the TEACHER (planning + the full toolset). Otherwise
 	// the session is still probing: build the PROBER (quiz/ask + probe_done).

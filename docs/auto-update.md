@@ -41,15 +41,14 @@ Even a merge with no text conflicts can be wrong for the hosted app, so after a 
 
 If either check fails, the build stops with "refusing to ship" and **the previous deployment stays live**. Nothing is lost.
 
-## Known state today: v0.5.0 needs a one-time manual port
+## Status: ported to v0.5.0
 
-A rehearsal against the real releases (v0.4.1 → v0.5.0) found:
-
-- 2 text conflicts: `app/api/settings/route.ts` and `src/server/chat-handler.ts`.
-- v0.5.0 also adds `src/store/atomic-write.ts`, which writes with `node:fs` directly. That would fail the storage seam check even if the conflicts were fixed.
-
-So the automatic update will (correctly) refuse v0.5.0. After someone ports v0.5.0 by hand and sets `"base": "v0.5.0"` in `upstream.json`, later releases update automatically as long as they merge cleanly and pass both checks.
-
+v0.5.0 needed a one-time manual port. It had 2 text conflicts, and its new
+crash-safe save helper (`src/store/atomic-write.ts`) wrote to disk directly.
+That helper now runs through the storage seam (`src/store/vfs.ts`): hosted
+saves go to Convex, and local/desktop saves keep upstream's crash-safe
+behaviour unchanged. `upstream.json` now says `"base": "v0.5.0"`, so later
+releases merge automatically as long as they pass the safety gates.
 
 ## Manual update
 

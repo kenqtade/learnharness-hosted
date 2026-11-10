@@ -15,12 +15,13 @@ import { withStore } from "@/src/server";
  * (core/settings-resolution.ts resolveSettings — browser-safe).
  */
 
-import { settingsStore } from "@/src/server";
+import { settingsStore, fileAccessConfigurationError } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
 async function GET_handler() {
-	return Response.json({ settings: settingsStore.readSettings() });
+	const fileAccessError = fileAccessConfigurationError();
+	return Response.json({ settings: settingsStore.readSettings(), ...(fileAccessError ? { fileAccessError } : {}) });
 }
 
 // convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)
