@@ -6,10 +6,10 @@
  * server seam (events-stream.ts); the framework route stays a thin
  * wrapper (the import law; tests drive the seam directly).
  */
-import { eventsResponse } from "@/src/server";
+import { eventsResponse, withStore } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export function GET(): Response {
-	return eventsResponse();
-}
+// withStore: in platform mode the stream subscribes inside the caller's
+// scope, so it only carries that user's events (src/core/events.ts)
+export const GET = withStore((_request: Request): Response => eventsResponse());

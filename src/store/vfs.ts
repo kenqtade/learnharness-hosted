@@ -26,6 +26,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../convex/_generated/api.js";
 import { AUTH_FILE, PATHS } from "../../config.ts";
 import { keepAlive } from "../server/keep-alive.ts";
+import { currentUser, dataSpaceOf, safeUserId } from "./user-scope.ts";
 
 export const convexMode = process.env.LH_STORE === "convex";
 
@@ -33,15 +34,59 @@ export const convexMode = process.env.LH_STORE === "convex";
 
 const DATA_ROOT = path.resolve(PATHS.data);
 const AUTH_DIR = path.dirname(path.resolve(AUTH_FILE));
+const AUTH_ABS = path.resolve(AUTH_FILE);
+/** Platform-wide records (accounts, invites, platform config) — never
+ *  inside any user's data space. A sibling of the data dir on real fs. */
+export const PLATFORM_ROOT = `${DATA_ROOT}-platform`;
+/** Real-fs home of non-owner data spaces (multi-user mode, local runs). */
+const USERS_ROOT = `${DATA_ROOT}-users`;
 
-/** Convex key for a managed path, or null when the path stays on real fs. */
-function keyOf(p: string): string | null {
-	const abs = path.resolve(String(p));
+const inside = (rel: string) => !rel.startsWith("..") && !path.isAbsolute(rel);
+const posix = (rel: string) => rel.split(path.sep).join("/");
+
+/** The legacy (single-user / owner) key of a path, or null if unmanaged. */
+function legacyKey(abs: string): string | null {
 	const rel = path.relative(DATA_ROOT, abs);
 	if (rel === "") return "data";
-	if (!rel.startsWith("..") && !path.isAbsolute(rel)) return `data/${rel.split(path.sep).join("/")}`;
+	if (inside(rel)) return `data/${posix(rel)}`;
 	if (path.dirname(abs) === AUTH_DIR && path.basename(abs).includes("auth")) return `auth/${path.basename(abs)}`;
 	return null;
+}
+
+interface Target {
+	/** Convex key, or null when the path stays on real fs. */
+	key: string | null;
+	/** The real-fs path to use when not in Convex mode. */
+	real: string;
+	/** True when the path was moved into a member's data space. */
+	scoped: boolean;
+}
+
+/** Where a path really lives for the CURRENT user (see user-scope.ts). */
+function target(p: string): Target {
+	const abs = path.resolve(String(p));
+	// provider keys are platform-wide: the owner's, for every account
+	if (abs === AUTH_ABS) return { key: legacyKey(abs), real: abs, scoped: false };
+	const prel = path.relative(PLATFORM_ROOT, abs);
+	if (inside(prel)) return { key: prel === "" ? "platform" : `platform/${posix(prel)}`, real: abs, scoped: false };
+	const rel = path.relative(DATA_ROOT, abs);
+	if (inside(rel)) {
+		const space = dataSpaceOf(currentUser());
+		if (space !== null) {
+			if (!safeUserId(space)) throw new Error("vfs: invalid user id");
+			return {
+				key: rel === "" ? `users/${space}` : `users/${space}/${posix(rel)}`,
+				real: rel === "" ? path.join(USERS_ROOT, space) : path.join(USERS_ROOT, space, rel),
+				scoped: true,
+			};
+		}
+	}
+	return { key: legacyKey(abs), real: abs, scoped: false };
+}
+
+/** Real fs, member space: the space folder may not exist yet. */
+function ensureParent(t: Target) {
+	if (t.scoped) realFs.mkdirSync(path.dirname(t.real), { recursive: true });
 }
 
 // ─── in-memory copy + Convex client ───────────────────────────────────────
@@ -203,7 +248,7 @@ function enoent(syscall: string, p: string): NodeJS.ErrnoException {
 	});
 }
 function isDirKey(key: string): boolean {
-	if (key === "data" || dirs.has(key)) return true;
+	if (key === "data" || key === "platform" || /^users\/[^/]+$/.test(key) || dirs.has(key)) return true;
 	const prefix = `${key}/`;
 	for (const k of files.keys()) if (k.startsWith(prefix)) return true;
 	return false;
@@ -226,44 +271,48 @@ class VDirent {
 export type Dirent = realFs.Dirent;
 
 function existsSync(p: realFs.PathLike): boolean {
-	const key = keyOf(String(p));
-	if (!convexMode || key === null) return realFs.existsSync(p);
-	return files.has(key) || isDirKey(key);
+	const t = target(String(p));
+	if (!convexMode || t.key === null) return realFs.existsSync(t.real);
+	return files.has(t.key) || isDirKey(t.key);
 }
 
 function readFileSync(p: realFs.PathOrFileDescriptor, options?: unknown): any {
-	const key = typeof p === "number" ? null : keyOf(String(p));
-	if (!convexMode || key === null) return realFs.readFileSync(p, options as any);
-	const data = files.get(key);
+	if (typeof p === "number") return realFs.readFileSync(p, options as any);
+	const t = target(String(p));
+	if (!convexMode || t.key === null) return realFs.readFileSync(t.real, options as any);
+	const data = files.get(t.key);
 	if (data === undefined) throw enoent("open", String(p));
 	const enc = typeof options === "string" ? options : (options as { encoding?: string } | undefined)?.encoding;
 	return enc ? data : Buffer.from(data, "utf-8");
 }
 
 function writeFileSync(p: realFs.PathOrFileDescriptor, data: unknown, options?: unknown): void {
-	const key = typeof p === "number" ? null : keyOf(String(p));
-	if (!convexMode || key === null) return realFs.writeFileSync(p, data as any, options as any);
-	put(key, toText(data));
+	if (typeof p === "number") return realFs.writeFileSync(p, data as any, options as any);
+	const t = target(String(p));
+	if (!convexMode || t.key === null) { ensureParent(t); return realFs.writeFileSync(t.real, data as any, options as any); }
+	put(t.key, toText(data));
 }
 
 function appendFileSync(p: realFs.PathOrFileDescriptor, data: unknown, options?: unknown): void {
-	const key = typeof p === "number" ? null : keyOf(String(p));
-	if (!convexMode || key === null) return realFs.appendFileSync(p, data as any, options as any);
-	put(key, (files.get(key) ?? "") + toText(data));
+	if (typeof p === "number") return realFs.appendFileSync(p, data as any, options as any);
+	const t = target(String(p));
+	if (!convexMode || t.key === null) { ensureParent(t); return realFs.appendFileSync(t.real, data as any, options as any); }
+	put(t.key, (files.get(t.key) ?? "") + toText(data));
 }
 
 function mkdirSync(p: realFs.PathLike, options?: unknown): any {
-	const key = keyOf(String(p));
-	if (!convexMode || key === null) return realFs.mkdirSync(p, options as any);
-	dirs.add(key);
+	const t = target(String(p));
+	if (!convexMode || t.key === null) { ensureParent(t); return realFs.mkdirSync(t.real, options as any); }
+	dirs.add(t.key);
 	return undefined;
 }
 
 function readdirSync(p: realFs.PathLike, options: { withFileTypes: true }): Dirent[];
 function readdirSync(p: realFs.PathLike, options?: BufferEncoding | { withFileTypes?: false; encoding?: BufferEncoding }): string[];
 function readdirSync(p: realFs.PathLike, options?: unknown): any {
-	const key = keyOf(String(p));
-	if (!convexMode || key === null) return realFs.readdirSync(p, options as any);
+	const t = target(String(p));
+	if (!convexMode || t.key === null) return realFs.readdirSync(t.real, options as any);
+	const key = t.key;
 	if (!isDirKey(key)) throw enoent("scandir", String(p));
 	const prefix = `${key}/`;
 	const names = new Map<string, boolean>(); // name → isDir
@@ -283,9 +332,11 @@ function readdirSync(p: realFs.PathLike, options?: unknown): any {
 }
 
 function renameSync(from: realFs.PathLike, to: realFs.PathLike): void {
-	const a = keyOf(String(from));
-	const b = keyOf(String(to));
-	if (!convexMode || (a === null && b === null)) return realFs.renameSync(from, to);
+	const ta = target(String(from));
+	const tb = target(String(to));
+	const a = ta.key;
+	const b = tb.key;
+	if (!convexMode || (a === null && b === null)) { ensureParent(tb); return realFs.renameSync(ta.real, tb.real); }
 	if (a === null || b === null) throw new Error(`vfs: cannot rename across storage (${from} → ${to})`);
 	const data = files.get(a);
 	if (data !== undefined) {
@@ -305,15 +356,16 @@ function renameSync(from: realFs.PathLike, to: realFs.PathLike): void {
 }
 
 function unlinkSync(p: realFs.PathLike): void {
-	const key = keyOf(String(p));
-	if (!convexMode || key === null) return realFs.unlinkSync(p);
-	if (!files.has(key)) throw enoent("unlink", String(p));
-	del(key);
+	const t = target(String(p));
+	if (!convexMode || t.key === null) return realFs.unlinkSync(t.real);
+	if (!files.has(t.key)) throw enoent("unlink", String(p));
+	del(t.key);
 }
 
 function rmSync(p: realFs.PathLike, options?: realFs.RmOptions): void {
-	const key = keyOf(String(p));
-	if (!convexMode || key === null) return realFs.rmSync(p, options);
+	const t = target(String(p));
+	if (!convexMode || t.key === null) return realFs.rmSync(t.real, options);
+	const key = t.key;
 	if (files.has(key)) { del(key); return; }
 	if (isDirKey(key)) {
 		if (!options?.recursive) throw Object.assign(new Error(`EISDIR: ${p}`), { code: "ERR_FS_EISDIR" });
@@ -326,8 +378,8 @@ function rmSync(p: realFs.PathLike, options?: realFs.RmOptions): void {
 }
 
 function chmodSync(p: realFs.PathLike, mode: realFs.Mode): void {
-	const key = keyOf(String(p));
-	if (!convexMode || key === null) return realFs.chmodSync(p, mode);
+	const t = target(String(p));
+	if (!convexMode || t.key === null) return realFs.chmodSync(t.real, mode);
 	// modes have no meaning in Convex; access is gated by LH_CONVEX_SECRET
 }
 
