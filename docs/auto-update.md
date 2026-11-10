@@ -32,6 +32,25 @@
 
 If the auto-merge encounters conflicts (different code on the same lines), the build fails. The previous deployment remains live. Check Vercel's build logs to see which files conflicted, then fix the conflict locally and redeploy.
 
+## Safety gates (what stops an unsafe update)
+
+Even a merge with no text conflicts can be wrong for the hosted app, so after a merge and `npm ci` the build runs two checks **before** building:
+
+1. **Storage seam check** (`tests/storage-seam.test.ts`): no file in `src/store/` may use `node:fs` directly. On Vercel every save must go through `src/store/vfs.ts`, which writes to Convex. Anything else writes to a throwaway disk and the data disappears.
+2. **Type check** (`tsc --noEmit`).
+
+If either check fails, the build stops with "refusing to ship" and **the previous deployment stays live**. Nothing is lost.
+
+## Known state today: v0.5.0 needs a one-time manual port
+
+A rehearsal against the real releases (v0.4.1 → v0.5.0) found:
+
+- 2 text conflicts: `app/api/settings/route.ts` and `src/server/chat-handler.ts`.
+- v0.5.0 also adds `src/store/atomic-write.ts`, which writes with `node:fs` directly. That would fail the storage seam check even if the conflicts were fixed.
+
+So the automatic update will (correctly) refuse v0.5.0. After someone ports v0.5.0 by hand and sets `"base": "v0.5.0"` in `upstream.json`, later releases update automatically as long as they merge cleanly and pass both checks.
+
+
 ## Manual update
 
 You can manually check for updates by visiting `GET /api/update` (or clicking "Check now" in settings). This returns the current status:

@@ -29,6 +29,12 @@ import https from "node:https";
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname));
 
+/** Top-level entries that are never part of the source tree being merged
+ *  (exact names only: a substring test would drop next.config.ts,
+ *  vercel.json, .gitignore and so on). */
+const SKIP = new Set([".git", "node_modules", ".next", ".vercel", ".cache", ".lock-regenerated"]);
+export const skipEntry = (entry) => SKIP.has(entry) || /^\.env/.test(entry);
+
 function log(...args) {
 	console.log(`[upstream-merge]`, ...args);
 }
@@ -224,7 +230,6 @@ async function main() {
 		execFileSync("git", ["checkout", "-b", "ours"], { cwd: repoDir });
 
 		// Clear and replace with our source
-		const excludePatterns = [".git", "node_modules", ".next", ".vercel", ".env*"];
 		for (const entry of fs.readdirSync(repoDir)) {
 			if (entry === ".git") continue;
 			const fullPath = path.join(repoDir, entry);
@@ -236,9 +241,7 @@ async function main() {
 		}
 
 		for (const entry of fs.readdirSync(ROOT)) {
-			if (excludePatterns.some((p) => (p.startsWith(".") ? entry.includes(p.slice(1)) : entry === p))) {
-				continue;
-			}
+			if (skipEntry(entry)) continue;
 			const src = path.join(ROOT, entry);
 			const dest = path.join(repoDir, entry);
 			if (fs.lstatSync(src).isDirectory()) {
@@ -253,9 +256,14 @@ async function main() {
 		execFileSync("git", ["add", "-A"], { cwd: repoDir });
 		execFileSync("git", ["commit", "-qm", "Our changes"], { cwd: repoDir });
 
+		let lockRegenerated = false;
 		log("Merging ours into theirs...");
 		try {
-			execFileSync("git", ["merge", "--no-edit", "ours"], { cwd: repoDir });
+			// Merge FROM the upstream side: HEAD = theirs (latest release),
+			// merging ours in. (Merging "ours" while on ours is a no-op that
+			// silently drops every upstream change.)
+			execFileSync("git", ["checkout", "-q", "theirs"], { cwd: repoDir });
+			execFileSync("git", ["merge", "--no-edit", "ours"], { cwd: repoDir, stdio: "pipe" });
 		} catch (err) {
 			log("Merge conflicts detected.");
 			const conflicts = execFileSync("git", ["diff", "--name-only", "--diff-filter=U"], { cwd: repoDir, encoding: "utf-8" }).trim();
@@ -266,23 +274,28 @@ async function main() {
 			const onlyPackageLock = conflictList.length === 1 && conflictList[0] === "package-lock.json";
 			if (onlyPackageLock) {
 				log("Only package-lock.json conflicts, taking theirs...");
-				execFileSync("git", ["checkout", "--", "package-lock.json"], { cwd: repoDir });
+				// HEAD is the upstream ("theirs") branch, so --ours = upstream's lock.
+				// package.json merged cleanly, so the lock no longer matches it:
+				// vercel-build.sh sees the marker and runs `npm install`, not `npm ci`.
+				execFileSync("git", ["checkout", "--ours", "--", "package-lock.json"], { cwd: repoDir });
 				execFileSync("git", ["add", "package-lock.json"], { cwd: repoDir });
-				execFileSync("git", ["commit", "--amend", "--no-edit"], { cwd: repoDir });
+				execFileSync("git", ["commit", "--no-edit"], { cwd: repoDir });
+				lockRegenerated = true;
 			} else {
 				throw new Error(`Merge conflicts: ${conflictList.join(", ")}`);
 			}
 		}
 
 		log("Copying merged tree to cwd...");
-		const keepPatterns = [".git", "node_modules", ".next", ".vercel", /^\.env/];
-
-		for (const entry of fs.readdirSync(repoDir)) {
+		const merged = new Set(fs.readdirSync(repoDir).filter((e) => !skipEntry(e)));
+		// Files upstream deleted must not linger (a stale module can break the build).
+		for (const entry of fs.readdirSync(ROOT)) {
+			if (skipEntry(entry) || merged.has(entry)) continue;
+			fs.rmSync(path.join(ROOT, entry), { recursive: true, force: true });
+		}
+		for (const entry of merged) {
 			const src = path.join(repoDir, entry);
 			const dest = path.join(ROOT, entry);
-			if (keepPatterns.some((p) => (typeof p === "string" ? entry === p : p.test(entry)))) {
-				continue;
-			}
 			if (fs.lstatSync(src).isDirectory()) {
 				if (fs.existsSync(dest)) {
 					fs.rmSync(dest, { recursive: true, force: true });
@@ -305,6 +318,8 @@ async function main() {
 		};
 		fs.writeFileSync(path.join(ROOT, "upstream.json"), JSON.stringify(upstreamUpdated, null, "\t"), "utf-8");
 
+		if (lockRegenerated) fs.writeFileSync(path.join(ROOT, ".lock-regenerated"), "1\n");
+		fs.rmSync(tempDir, { recursive: true, force: true });
 		log("Done!");
 		process.exit(0);
 	} catch (err) {
@@ -313,4 +328,4 @@ async function main() {
 	}
 }
 
-main();
+if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) main();

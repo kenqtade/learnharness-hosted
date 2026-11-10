@@ -42,12 +42,19 @@ merge_status=$?
 set -e
 
 if [ $merge_status -eq 0 ]; then
+	echo "[vercel-build] Merge succeeded, installing dependencies..."
+	if [ -f .lock-regenerated ]; then
+		rm -f .lock-regenerated
+		npm install --no-audit --no-fund
+	else
+		npm ci --no-audit --no-fund
+	fi
+	# Safety gates run AFTER install (the release may add packages) and
+	# BEFORE build: a failure keeps the current deployment live.
 	echo "[vercel-build] Running storage seam gate..."
 	npx tsx --test tests/storage-seam.test.ts || { echo "[upstream-merge] merged release bypasses the Convex storage seam; refusing to ship"; exit 1; }
 	echo "[vercel-build] Running type check..."
 	NODE_OPTIONS=--max-old-space-size=4096 npx tsc --noEmit || { echo "[upstream-merge] merged release does not type-check; refusing to ship"; exit 1; }
-	echo "[vercel-build] Merge succeeded, installing dependencies..."
-	npm ci --no-audit --no-fund
 	exec npx next build
 elif [ $merge_status -eq 10 ]; then
 	echo "[vercel-build] No newer upstream release"
