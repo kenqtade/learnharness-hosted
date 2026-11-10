@@ -2,6 +2,9 @@ import { withStore } from "@/src/server";
 import { isTurnRunning, listJobs } from "@/src/server";
 
 export const dynamic = "force-dynamic";
+// Background work (turns, jobs, deliveries) runs under waitUntil in this
+// invocation — make the 300 s wall explicit (reliability wave, 2026-11).
+export const maxDuration = 300;
 
 /**
  * Job status endpoint (contracts.ts "THE ASYNC PROTOCOL" §4): the chat

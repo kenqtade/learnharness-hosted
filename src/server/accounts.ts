@@ -393,6 +393,8 @@ export function routeAccess(method: string, pathname: string): Access {
 	// probe is public (the refresh banner also runs on the sign-in page);
 	// everyone may READ the update status, only the owner starts a check.
 	if (p === "/api/cron/update" || p === "/api/version") return "public";
+	// internal dispatch authenticates itself (HMAC-signed task)
+	if (p === "/api/internal/run") return "public";
 	if (p === "/api/update") return method.toUpperCase() === "GET" ? "user" : "owner";
 	if (p.startsWith("/api/admin")) return "owner";
 	if (p.startsWith("/api/subscriptions") || p === "/api/claude-code") return "owner";

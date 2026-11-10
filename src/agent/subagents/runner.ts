@@ -19,7 +19,7 @@ import {
 	type VisualResult,
 	type VisualToolInput,
 } from "../../core/contracts.ts";
-import { registerJobAbort, unregisterJobAbort } from "./aborts.ts";
+import { isJobLive, registerJobAbort, unregisterJobAbort } from "./aborts.ts";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -93,6 +93,39 @@ export interface JobRunnerDeps {
 	 *  Injected because the agent layer may not read the key store; absent
 	 *  in tests that inject engines directly (test engines never owe a key). */
 	providerKeyMissing?: (provider: string, tier: ModelSlotName) => ProviderKeyMissing | null;
+	/** Wall-clock budget for ONE run of a job, in ms (reliability wave,
+	 *  2026-11). Hosts that kill a function at a hard wall (Vercel: 300 s)
+	 *  pass a figure below the wall: the runner stops the loop itself at the
+	 *  budget, hands the job back (lease released) and asks `redispatch` for
+	 *  a fresh run — instead of being killed mid-write with no trace.
+	 *  undefined = no budget (local server / desktop / tests). Read per run. */
+	budgetMs?: () => number | undefined;
+	/** Start a released job again in a FRESH function invocation (its own
+	 *  time budget). Absent → the next recovery sweep re-runs it. */
+	redispatch?: (jobId: string) => void;
+}
+
+/** Lease + retry tuning (reliability wave, 2026-11). Mutable for tests. */
+export const jobLeaseTuning = {
+	/** How long a claim holds without renewal. Must comfortably exceed
+	 *  renewMs (a slow store write must not let a live job's claim lapse). */
+	ttlMs: 60_000,
+	renewMs: 20_000,
+	/** Worker starts per job, counting hosting kills and out-of-time stops. */
+	maxAttempts: 3,
+};
+
+/** One opaque id per server process — the owner half of a lease. */
+const INSTANCE_ID = `${process.env.VERCEL_REGION ?? "local"}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+
+/** The honest failure text when a job keeps running out of time. */
+export function outOfTimeReason(attempts: number): string {
+	return `ran out of time — the job was stopped at the hosting time limit ${attempts} time${attempts === 1 ? "" : "s"} without finishing`;
+}
+
+/** True when another worker holds a live claim on the job. */
+export function leaseHeldElsewhere(job: Pick<JobRecord, "lease">, owner: string | undefined, now = Date.now()): boolean {
+	return !!job.lease && job.lease.until > now && job.lease.owner !== owner;
 }
 
 export interface JobRunner {
@@ -115,6 +148,8 @@ interface LoopContext {
 	chatId?: string;
 	/** Fold one model call's usage into the job record (progress write). */
 	onUsage: (step: UsageStepLike) => void;
+	/** The kill switch behind abortSignal (deadline / lost-lease stops). */
+	controller: AbortController;
 }
 
 /** The kind→role table (model slots wave, 2026-09-20): which ModelRole's
@@ -132,6 +167,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 	/** Running usage totals per live job (the loop's onUsage folds here,
 	 * then writes through the job store so the poll sees progress). */
 	const usageTotals = new Map<string, JobUsage>();
+	/** Lease owner per job this runner is executing. */
+	const leaseOwners = new Map<string, string>();
+	/** Jobs whose run hit its time budget: the loop's own (abort-shaped)
+	 *  outcome is discarded; runJob's finally hands the job back instead. */
+	const outOfTime = new Set<string>();
+	/** Jobs whose claim another worker took over: unwind without writing. */
+	const lostLease = new Set<string>();
 
 	function makeLoopContext(jobId: string, engine: PiEngine): LoopContext {
 		const chatId = jobStore.getJob(jobId)?.chatId;
@@ -144,6 +186,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		const controller = new AbortController();
 		registerJobAbort(jobId, controller);
 		return {
+			controller,
 			abortSignal: controller.signal,
 			chatId,
 			onUsage: (step) => {
@@ -202,7 +245,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			jobStore.updateJob(jobId, { status: "error", error: `unknown kind ${job.kind}`, activity: "failed" });
 			return;
 		}
-		const engine = pickEngine(job.kind);
 		// The per-need refusal guards (BYOK 2026-09-22 / provider-key
 		// interlude 2026-09-25): no engine for the kind's tier, or the
 		// resolved engine's provider key gone — both refuse through the SAME
@@ -213,6 +255,28 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		// instead of waiting forever on a job it already dispatched.
 		const refuse = async (reason: string): Promise<void> => {
 			if (stillRunning(jobId)) jobStore.updateJob(jobId, { error: reason });
+			await finishJob(jobId, failureFor(job, input, reason));
+		};
+		if (isJobLive(jobId)) return; // this process is already executing it
+		if (leaseHeldElsewhere(job, undefined)) {
+			// Another server instance holds a live claim (it renews while it
+			// runs): never compute beside it. Its lapse is what recovery waits on.
+			console.info(`[job ${jobId}] skipped — claimed by ${job.lease?.owner} until ${new Date(job.lease!.until).toISOString()}`);
+			return;
+		}
+		const attempts = (job.attempts ?? 0) + 1;
+		if (attempts > jobLeaseTuning.maxAttempts) {
+			const reason = outOfTimeReason(job.attempts ?? 0);
+			console.error(`[job ${jobId}] giving up — ${reason}`);
+			jobStore.updateJob(jobId, { lease: null });
+			await refuse(reason);
+			return;
+		}
+		await runClaimed(jobId, job, input, attempts, run, refuse);
+	}
+
+	/** The kind's failure-shaped result for an honest refusal / give-up. */
+	function failureFor(job: JobRecord, input: JobToolInput | undefined, reason: string): ResearchResult | DemoResult | VisualResult | PdfResult {
 			const resolved = resolveInput(job, input) as
 				| ResearchToolInput
 				| DemoToolInput
@@ -239,8 +303,18 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 									pagesRead: [],
 									pagesConsulted: [],
 								};
-			await finishJob(jobId, failure);
-		};
+			return failure;
+	}
+
+	async function runClaimed(
+		jobId: string,
+		job: JobRecord,
+		input: JobToolInput | undefined,
+		attempts: number,
+		run: (jobId: string, engine: PiEngine, input: JobToolInput | undefined, loop: LoopContext) => Promise<void>,
+		refuse: (reason: string) => Promise<void>,
+	): Promise<void> {
+		const engine = pickEngine(job.kind);
 		if (!engine) {
 			const tier = ROLE_SLOT[KIND_ROLE[job.kind]];
 			const envelope = modelsNotConfigured([tier]);
@@ -259,9 +333,45 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			await refuse(keyRefusal.error);
 			return;
 		}
+		// CLAIM (reliability wave, 2026-11): a durable lease other instances
+		// respect, renewed while the loop runs, plus the attempt count that
+		// bounds re-runs after hosting kills. Earlier usage is carried over
+		// so a resumed job's money channel stays cumulative.
+		const owner = `${INSTANCE_ID}:${Math.random().toString(36).slice(2, 8)}`;
+		leaseOwners.set(jobId, owner);
+		if (job.usage) usageTotals.set(jobId, job.usage);
+		jobStore.updateJob(jobId, {
+			lease: { owner, until: Date.now() + jobLeaseTuning.ttlMs },
+			attempts,
+			...(attempts > 1 ? { activity: `resuming (attempt ${attempts} of ${jobLeaseTuning.maxAttempts})`, error: undefined } : {}),
+		});
+		const loop = makeLoopContext(jobId, engine);
+		const renew = setInterval(() => {
+			const current = jobStore.getJob(jobId);
+			if (!current || current.status !== "running") return;
+			if (current.lease && current.lease.owner !== owner) {
+				// Someone else re-ran the job (our claim lapsed — e.g. a frozen
+				// instance): stop computing; their run owns the record now.
+				lostLease.add(jobId);
+				loop.controller.abort();
+				return;
+			}
+			jobStore.updateJob(jobId, { lease: { owner, until: Date.now() + jobLeaseTuning.ttlMs } });
+		}, jobLeaseTuning.renewMs);
+		const budget = deps.budgetMs?.();
+		const deadline = budget && budget > 0
+			? setTimeout(() => {
+				if (!stillRunning(jobId)) return;
+				console.error(`[job ${jobId}] out of time after ${budget} ms (attempt ${attempts}) — stopping the loop`);
+				outOfTime.add(jobId);
+				loop.controller.abort();
+			}, budget)
+			: undefined;
 		try {
-			await run(jobId, engine, input, makeLoopContext(jobId, engine));
+			await run(jobId, engine, input, loop);
 		} finally {
+			clearInterval(renew);
+			if (deadline) clearTimeout(deadline);
 			unregisterJobAbort(jobId);
 			// The last usage write may have been mid-flight when the loop died;
 			// persist what was folded (the abort path patches only status, so
@@ -269,6 +379,27 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			const usage = usageTotals.get(jobId);
 			if (usage) jobStore.updateJob(jobId, { usage });
 			usageTotals.delete(jobId);
+			leaseOwners.delete(jobId);
+			const lost = lostLease.delete(jobId);
+			const timedOut = outOfTime.delete(jobId);
+			const current = jobStore.getJob(jobId);
+			const ours = current?.lease?.owner === owner;
+			if (!lost && ours && timedOut && current?.status === "running") {
+				if (attempts < jobLeaseTuning.maxAttempts) {
+					// Hand the job back for a fresh run with a full budget.
+					jobStore.updateJob(jobId, {
+						lease: null,
+						error: undefined,
+						activity: `out of time — resuming in a fresh run (attempt ${attempts + 1} of ${jobLeaseTuning.maxAttempts})`,
+					});
+					deps.redispatch?.(jobId);
+				} else {
+					jobStore.updateJob(jobId, { lease: null });
+					await refuse(outOfTimeReason(attempts));
+				}
+			} else if (!lost && ours) {
+				jobStore.updateJob(jobId, { lease: null });
+			}
 		}
 	}
 
@@ -308,6 +439,14 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		// the loop unwinds): no result write, no steer — the abort path owns
 		// the record and queues the abort steer itself.
 		if (job.status !== "running") return;
+		// Reliability wave: a run stopped at its time budget hands the job
+		// back (runJob's finally) — its abort-shaped outcome is not a result;
+		// a run whose claim another worker took over never writes.
+		if (outOfTime.has(jobId) || lostLease.has(jobId)) return;
+		if (leaseHeldElsewhere(job, leaseOwners.get(jobId))) {
+			console.error(`[job ${jobId}] result dropped — job is claimed by ${job.lease?.owner}`);
+			return;
+		}
 		const failed = isSubagentFailure(job.kind, result);
 		jobStore.updateJob(jobId, {
 			result,

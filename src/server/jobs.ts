@@ -743,6 +743,10 @@ export function recoverStaleJobs(): void {
 		for (const chat of stores.chatStore.listChats()) {
 			for (const job of stores.jobStore.listJobs(chat.id)) {
 				if (isJobLive(job.id)) continue; // never re-run beside live computation
+				// …nor beside a live claim held by ANOTHER server instance
+				// (reliability wave, 2026-11: process liveness is per instance;
+				// the durable lease is renewed while a worker runs anywhere).
+				if (job.status === "running" && job.lease && job.lease.until > now) continue;
 				if (!stores.chatStore.getChat(job.chatId)) continue;
 				if (isTurnRunning(job.chatId)) continue;
 				const recovered = normalizeLegacyResult(job);
@@ -760,6 +764,19 @@ export function recoverStaleJobs(): void {
 	} catch (err) {
 		console.error("[jobs] stale-job recovery sweep failed:", err);
 	}
+}
+
+/** Resume a chat's pending job deliveries in THIS invocation (reliability
+ *  wave, 2026-11): the internal delivery task runs the wake turn in a fresh
+ *  function invocation instead of whatever time the job's run left over. */
+export async function resumeDeliveries(chatId: string): Promise<void> {
+	restorePendingDeliveries(chatId);
+	await pump(chatId);
+}
+
+/** The chat a job steer belongs to (dispatch routing). */
+export function steerChatId(steer: SteerMessage): string {
+	return chatIdOf(steer);
 }
 
 /** The /api/jobs entry: job list for the client poll (+ lazy recovery). */

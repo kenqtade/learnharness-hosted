@@ -11,9 +11,12 @@ import { withStore } from "@/src/server";
  * flight (the dock is the source of truth for that); failures are logged
  * by the pipeline and leave coverage untouched — the button stays honest.
  */
-import { extraction, extractionStatuses } from "@/src/server";
+import { extraction, extractionStatuses, keepAlive } from "@/src/server";
 
 export const dynamic = "force-dynamic";
+// Background work (turns, jobs, deliveries) runs under waitUntil in this
+// invocation — make the 300 s wall explicit (reliability wave, 2026-11).
+export const maxDuration = 300;
 
 async function POST_handler(request: Request) {
 	let body: unknown;
@@ -31,7 +34,10 @@ async function POST_handler(request: Request) {
 	}
 	// Fire-and-forget, like the trigger: the dock + the coverage panel's
 	// running flags track progress; the promise never blocks the response.
-	void extraction.runExtraction(chatId).catch((err: unknown) => {
+	// keepAlive (reliability wave, 2026-11): on Vercel a promise that is not
+	// registered with waitUntil is frozen the moment the 202 leaves — the
+	// manual extract button silently did nothing on hosted deployments.
+	void keepAlive(extraction.runExtraction(chatId)).catch((err: unknown) => {
 		console.error(`[chat ${chatId}] manual extraction failed:`, err);
 	});
 	return Response.json({ started: true }, { status: 202 });

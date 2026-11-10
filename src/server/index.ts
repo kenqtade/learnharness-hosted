@@ -63,5 +63,6 @@ export * from "./accounts.ts";
 export * from "./accounts-http.ts";
 export { currentUser, multiUser } from "../store/user-scope.ts";
 export { keepAlive } from "./keep-alive.ts";
+export { INTERNAL_SIG_HEADER } from "./internal-dispatch.ts";
 export { capabilityReport } from "./capabilities.ts";
 export * from "./upstream-update.ts";

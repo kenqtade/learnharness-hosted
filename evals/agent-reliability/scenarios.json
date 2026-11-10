@@ -1,0 +1,34 @@
+[
+	{
+		"id": "turn",
+		"what": "Basic lesson turns: opening + answering the prober until it hands off to the teacher (the teacher's first run is a server-side wake).",
+		"opening": "I want to learn how a binary search works. I'm a complete beginner.",
+		"answerRounds": 6
+	},
+	{
+		"id": "visual",
+		"what": "Visual sub-agent (vision slot): a diagram job must finish and reach the lesson.",
+		"opening": "Teach me how the heart pumps blood. I'm a complete beginner and I learn best from pictures.",
+		"answerRounds": 10,
+		"request": "Please draw me a labelled diagram of the four chambers of the heart and the blood flow between them — use your visual tool.",
+		"job": "visual",
+		"nudge": "Please call the visual tool now to make that heart diagram."
+	},
+	{
+		"id": "demo",
+		"what": "Demo sub-agent (cheap slot, the longest loop: up to 24 model calls with self-testing).",
+		"opening": "Teach me what a pendulum's period depends on. I'm a complete beginner.",
+		"answerRounds": 10,
+		"request": "Please build me an interactive demo where I can change the pendulum length and gravity and watch the swing — use your demo tool.",
+		"job": "demo",
+		"nudge": "Please call the demo tool now to build that pendulum demo."
+	},
+	{
+		"id": "extraction",
+		"what": "Background graph extraction after lesson turns (cheap slot, up to 16 model calls).",
+		"opening": "I want to learn what photosynthesis is. I'm a complete beginner.",
+		"answerRounds": 4,
+		"extraction": true,
+		"extractionLimit": 480
+	}
+]

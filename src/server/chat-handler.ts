@@ -21,13 +21,20 @@ import {
 	reconcileUserSteers,
 	registerLiveAgent,
 	restoreUncommittedAutomatic,
+	resumeDeliveries,
 	setJobRespawn,
 	setTurnRunner,
+	steerChatId,
 	settleSteers,
 	steerLiveChat,
 	unregisterLiveAgent,
 } from "./jobs.ts";
 import { runPiTurn, type PiTurnSpec } from "./pi/ui-stream.ts";
+import { dispatchInternal, dispatchTarget, verifyEnvelope } from "./internal-dispatch.ts";
+import { getAccount } from "./accounts.ts";
+import { runAsUser, multiUser } from "../store/user-scope.ts";
+import { storeReady as syncStoreNow } from "../store/vfs.ts";
+import type { SteerMessage } from "../core/contracts.ts";
 import { durableRuntime, durableRuntimeSelected, setDurableRecoverer } from "./durable/harness.ts";
 import { startDurableTurn, type DurableAgentKind, type DurableTurnPlan } from "./durable/turn.ts";
 import { setFileAccessPolicy } from "../agent/tools/file-access.ts";
@@ -97,10 +104,86 @@ function settlementErrorText(error: unknown): string {
 	return error instanceof TurnPersistenceError ? error.message : "An error occurred.";
 }
 
+/** Per-run wall budget for a job on a host with a hard function wall
+ *  (reliability wave, 2026-11). Vercel kills at 300 s (maxDuration); the
+ *  runner stops itself at the budget and hands the job to a fresh run, so
+ *  the margin covers the result write + delivery dispatch. LH_JOB_BUDGET_MS
+ *  overrides; off Vercel there is no wall and no budget. */
+export function jobBudgetMs(env: Record<string, string | undefined> = process.env): number | undefined {
+	const raw = Number(env.LH_JOB_BUDGET_MS);
+	if (Number.isFinite(raw) && raw > 0) return raw;
+	return env.VERCEL ? 240_000 : undefined;
+}
+
+/** The per-turn wall budget (see the TURN DEADLINE in handleChatInput).
+ *  LH_TURN_BUDGET_MS overrides; Vercel defaults to 270 s of its 300 s. */
+export function turnBudgetMs(env: Record<string, string | undefined> = process.env): number | undefined {
+	const raw = Number(env.LH_TURN_BUDGET_MS);
+	if (Number.isFinite(raw) && raw > 0) return raw;
+	return env.VERCEL ? 270_000 : undefined;
+}
+
+/** The learner-facing text of a turn stopped at its deadline. */
+export function outOfTimeTurnText(budgetMs: number): string {
+	return `This reply ran out of time: the model had not finished after ${Math.round(budgetMs / 1000)} s, so the turn was stopped before the server's time limit. Send your message again, or pick a faster model in Settings.`;
+}
+
+/** Turn the aborted tail of a deadline-stopped turn into an explained
+ *  error (the last new assistant message, or a fresh one when the model
+ *  never produced any). Pure: returns a new array. */
+export function markTurnOutOfTime<T>(messages: readonly T[], baseCount: number, budgetMs: number): T[] {
+	const out = [...messages];
+	const text = outOfTimeTurnText(budgetMs);
+	for (let i = out.length - 1; i >= baseCount; i--) {
+		const m = out[i] as { role?: string };
+		if (m?.role !== "assistant") continue;
+		out[i] = { ...(out[i] as object), stopReason: "error", errorMessage: text } as T;
+		return out;
+	}
+	const last = [...out].reverse().find((m) => (m as { role?: string }).role === "assistant") as Record<string, unknown> | undefined;
+	out.push({
+		role: "assistant",
+		content: [],
+		api: last?.api ?? "openai-completions",
+		provider: last?.provider ?? "unknown",
+		model: last?.model ?? "unknown",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "error",
+		errorMessage: text,
+		timestamp: Date.now(),
+	} as unknown as T);
+	return out;
+}
+
+/** Start a job's worker: in its OWN invocation when the host has a wall
+ *  (internal dispatch), else — or when the dispatch fails — in-process. */
+function startJob(jobId: string, input?: Parameters<typeof jobRunner.runJob>[1]): void {
+	if (!dispatchTarget()) {
+		void keepAlive(jobRunner.runJob(jobId, input));
+		return;
+	}
+	void keepAlive(dispatchInternal({ kind: "job", jobId }).then((accepted) => {
+		if (!accepted) return jobRunner.runJob(jobId, input);
+	}));
+}
+
+/** Deliver a finished job's result: the wake turn runs in a FRESH
+ *  invocation when the host has a wall (the job may have used most of its
+ *  own), else in-process through the registry as before. */
+function deliverResult(steer: SteerMessage): Promise<void> {
+	if (!dispatchTarget()) return deliverJobResult(steer);
+	const chatId = steerChatId(steer);
+	return keepAlive(dispatchInternal({ kind: "deliver", chatId }).then((accepted) => {
+		if (!accepted) return deliverJobResult(steer);
+	}));
+}
+
 const jobRunner = createJobRunner({
 	chatStore: stores.chatStore,
 	jobStore: stores.jobStore,
-	deliver: deliverJobResult,
+	deliver: deliverResult,
+	budgetMs: () => jobBudgetMs(),
+	redispatch: (jobId) => startJob(jobId),
 	// BYOK (owner, 2026-09-22): job engines resolve the chain — role
 	// override → slot → NOTHING — read FRESH per job (a settings PUT
 	// between dispatch and spawn lands); an empty chain flows through as
@@ -164,7 +247,42 @@ function retentionForSlot(slot: ModelSlotName) {
 	return () => stores.settingsStore.readSettings()?.models?.[slot]?.cacheRetention;
 }
 
-setJobRespawn((jobId) => void keepAlive(jobRunner.runJob(jobId)));
+setJobRespawn((jobId) => startJob(jobId));
+
+/**
+ * The receiving end of internal dispatch (app/api/internal/run): verify the
+ * signed task, bind the user's data scope, start the work under keepAlive
+ * in THIS invocation and answer 202 at once. The store is force-synced so a
+ * record written by the dispatching invocation a moment ago is visible.
+ */
+export async function runInternalTask(body: string, signature: string | null): Promise<{ status: number; body: Record<string, unknown> }> {
+	const envelope = verifyEnvelope(body, signature);
+	if (!envelope) return { status: 401, body: { error: "invalid internal task" } };
+	if (multiUser && !envelope.user) return { status: 400, body: { error: "task has no user scope" } };
+	if (envelope.user?.role === "member" && !getAccount(envelope.user.id)) return { status: 410, body: { error: "unknown user" } };
+	await syncStoreNow(true);
+	const { task } = envelope;
+	const work = (): Promise<unknown> => {
+		if (task.kind === "job") {
+			return (async () => {
+				// The dispatcher flushed before sending; still, a lagging read
+				// must not strand the job — re-sync briefly before giving up
+				// (recovery would re-run it later anyway).
+				for (let i = 0; i < 3 && !stores.jobStore.getJob(task.jobId); i++) {
+					await new Promise((r) => setTimeout(r, 750));
+					await syncStoreNow(true);
+				}
+				await jobRunner.runJob(task.jobId);
+			})();
+		}
+		if (task.kind === "deliver") return resumeDeliveries(task.chatId);
+		return extraction.runExtraction(task.chatId);
+	};
+	const run = () => void keepAlive(work()).catch((err: unknown) => console.error(`[internal ${task.kind}] failed:`, err));
+	if (envelope.user) runAsUser(envelope.user, run);
+	else run();
+	return { status: 202, body: { accepted: task.kind } };
+}
 // The learner-filesystem policy (file-access wave): every tool registry is
 // built in this composition root, so the seam is installed here — the
 // tools read it fresh per call (allowed folders + the app's private paths).
@@ -199,7 +317,7 @@ function buildConversationAgent(
 					jobs: {
 						chatId,
 						jobStore: stores.jobStore,
-						spawn: (job, input) => void keepAlive(jobRunner.runJob(job.id, input)),
+						spawn: (job, input) => startJob(job.id, input),
 						searchAvailable,
 					},
 					...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
@@ -212,7 +330,7 @@ function buildConversationAgent(
 					chatId,
 					chatStore: stores.chatStore,
 					jobStore: stores.jobStore,
-					spawn: (job, input) => void keepAlive(jobRunner.runJob(job.id, input)),
+					spawn: (job, input) => startJob(job.id, input),
 					// The registry drop's signal (2026-09-20): no live engine
 					// = no research tool in the teacher's registry.
 					searchAvailable,
@@ -228,7 +346,7 @@ function buildConversationAgent(
 					// dispatch (owner ruling — phase-omnipresent), so its ctx
 					// needs the same job wiring as the teacher's.
 					jobStore: stores.jobStore,
-					spawn: (job, input) => void keepAlive(jobRunner.runJob(job.id, input)),
+					spawn: (job, input) => startJob(job.id, input),
 					searchAvailable,
 					// The map reader (wave 7): the prober reads the learner's
 					// knowledge graph through tools when the gate opens —
@@ -681,6 +799,13 @@ export async function handleChatInput(
 		// JSONL event stream with the record's turns; no-op unless
 		// LH_PROVIDER_EVENTS=1.
 		providerEventNote(chatId, "turn", `run start (base: ${agentMessages.length} messages)`);
+		// TURN DEADLINE (reliability wave, 2026-11): on a host with a hard
+		// function wall the turn stops itself shortly before it, so a hung or
+		// slow model ends in a saved, explained error instead of a silent kill
+		// that leaves no message at all.
+		const turnBudget = turnBudgetMs();
+		let turnDeadlineHit = false;
+		let turnDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
 		const turnSpec: Omit<PiTurnSpec, "agent" | "requestCycle"> = {
 			// The coalescing window seam (COMPACTION LAW, 2026-10-09): tests
 			// tighten it via LH_UPDATE_FLUSH_MS; production rides the 100ms
@@ -706,6 +831,7 @@ export async function handleChatInput(
 			onSettleFailure: (error, reportedErrorText) => {
 				// POST only acknowledges acceptance; the submitter may attach
 				// after this turn has already failed and left the registry.
+				if (turnDeadlineTimer) clearTimeout(turnDeadlineTimer);
 				rememberTurnFailure(chatId, reportedErrorText ?? settlementErrorText(error));
 				endTurn(chatId);
 				unregisterTurn(chatId);
@@ -717,7 +843,9 @@ export async function handleChatInput(
 				reconcileUserSteers(chatId, persisted);
 				settleSteers(chatId, persisted, true, constructed);
 			},
-			onFinish: (turnMessages, isAborted) => {
+			onFinish: (rawTurnMessages, isAborted) => {
+				if (turnDeadlineTimer) clearTimeout(turnDeadlineTimer);
+				const turnMessages = turnDeadlineHit ? markTurnOutOfTime(rawTurnMessages, persistBaseCount, turnBudget ?? 0) : rawTurnMessages;
 				// Wave B: append only messages past the temporary agent prefix.
 				// Retry's saved record still includes its earlier failed attempts.
 				const stamped = persistTurn(stores.chatStore, chatId, persistBaseCount, turnMessages, isAborted);
@@ -822,6 +950,14 @@ export async function handleChatInput(
 		// runPiTurn call is race-free: the agent loop only ticks in later
 		// microtasks, so settle (and thus unregister) cannot beat us here.
 		registerTurn(chatId, handle);
+		if (turnBudget) {
+			turnDeadlineTimer = setTimeout(() => {
+				turnDeadlineHit = true;
+				console.error(`[chat ${chatId}] turn out of time after ${turnBudget} ms — stopping it before the host's wall`);
+				handle.abort();
+			}, turnBudget);
+			(turnDeadlineTimer as { unref?: () => void }).unref?.();
+		}
 		// CONNECTION DIET B (owner, 2026-10-10 — the parallel-session freeze
 		// postmortem): the POST no longer holds the turn's SSE stream open for
 		// its whole duration. It acknowledges acceptance and CLOSES; the

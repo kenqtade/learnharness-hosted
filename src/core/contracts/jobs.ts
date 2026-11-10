@@ -40,6 +40,25 @@ export interface JobRecord {
 	 * inferred at read time (core/prices.ts). Absent on pre-2026-09 jobs and
 	 * until the runner's capture lands — renderers show "—", never zero. */
 	usage?: JobUsage;
+	/** The DURABLE liveness claim (reliability wave, 2026-11): the worker
+	 *  that is executing this job and until when its claim holds. The worker
+	 *  renews it while it runs; another server instance may re-run the job
+	 *  only after the claim has lapsed (`until` in the past). `null` = released
+	 *  (the worker stopped on purpose and handed the job back). Absent on
+	 *  records written before the wave — those fall back to process liveness. */
+	lease?: JobLease | null;
+	/** How many times a worker has STARTED this job. Bounds re-runs after
+	 *  hosting kills (a job that dies at the function wall every time would
+	 *  otherwise restart forever); past the cap the job fails with an honest
+	 *  "ran out of time" result delivered to the lesson. */
+	attempts?: number;
+}
+
+/** See JobRecord.lease. `owner` is opaque (instance + run nonce). */
+export interface JobLease {
+	owner: string;
+	/** Epoch milliseconds. */
+	until: number;
 }
 
 /** A sub-agent run's accumulated usage — the same accounting shape as a
