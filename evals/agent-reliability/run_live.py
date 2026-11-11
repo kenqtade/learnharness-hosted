@@ -32,6 +32,11 @@ import argparse, json, os, re, sys, time, urllib.error, urllib.request
 
 CLIENT_TOOLS = ("ask_user_question", "quiz", "explain", "probe", "recall")
 FUNCTION_LIMIT_S = 300  # Vercel's per-invocation ceiling on the plans we run
+# Turn continuation (server): a turn paused at its deadline saves a notice
+# containing this phrase and resumes in a fresh run, up to MAX_CONTINUATIONS
+# times. The eval keeps waiting through those notices.
+CONTINUING_MARK = "continues automatically"
+MAX_CONTINUATIONS = 2
 
 
 class Client:
@@ -149,8 +154,11 @@ class Run:
         if code != 200:
             return self.fail("turn-http", f"{label}: HTTP {code} {str(d)[:200]}")
         t0 = time.time()
-        chat, state = self.settle(before, FUNCTION_LIMIT_S + 90)
+        chat, state = self.settle(before, (FUNCTION_LIMIT_S + 90) * (1 + MAX_CONTINUATIONS))
         t["secs"] = round(time.time() - t0, 1)
+        hops = sum(1 for m in chat.get("messages", [])[before:] if m.get("role") == "assistant" and CONTINUING_MARK in (m.get("errorMessage") or ""))
+        if hops:
+            t["continuations"] = hops
         if state == "stuck":
             return self.fail("turn-stuck", f"{label}: still marked in flight after {t['secs']}s")
         if state == "lost":
@@ -170,7 +178,8 @@ class Run:
             chat = self.chat()
             msgs = chat.get("messages", [])
             sig = (len(msgs), json.dumps(msgs[-1:])[-200:] if msgs else "")
-            replied = len(msgs) > before and msgs[-1].get("role") == "assistant"
+            replied = len(msgs) > before and msgs[-1].get("role") == "assistant" \
+                and CONTINUING_MARK not in (msgs[-1].get("errorMessage") or "")
             if replied and not chat.get("turnInFlight") and sig == last_sig:
                 stable += 1
                 if stable >= 2:
@@ -400,7 +409,7 @@ def summarize(results, meta):
         by.setdefault(r["scenario"], []).append(r)
     lines = [f"# Agent reliability eval — {meta['when']}", "", f"- target: {meta['url']}", f"- teacher: {meta['teacher'] or '(configured)'}", f"- runs: {len(results)}", ""]
     ok = sum(1 for r in results if r["outcome"] == "ok")
-    lines += [f"**Overall: {ok}/{len(results)} ok**", "", "| scenario | ok | outcomes | median s | max turn s | max job s |", "|---|---|---|---|---|---|"]
+    lines += [f"**Overall: {ok}/{len(results)} ok**", "", "| scenario | ok | outcomes | median s | max turn s | continuations | max job s |", "|---|---|---|---|---|---|---|"]
     for sid, rs in by.items():
         outs = {}
         for r in rs:
@@ -408,7 +417,8 @@ def summarize(results, meta):
         secs = sorted(r.get("secs", 0) for r in rs)
         turn_max = max((t.get("secs", 0) for r in rs for t in r["turns"]), default=0)
         job_max = max((j.get("secs", 0) for r in rs for j in r["jobs"].values()), default=0)
-        lines.append(f"| {sid} | {sum(1 for r in rs if r['outcome'] == 'ok')}/{len(rs)} | {', '.join(f'{k}×{v}' for k, v in outs.items())} | {secs[len(secs) // 2]} | {turn_max} | {job_max} |")
+        hops = sum(t.get("continuations", 0) for r in rs for t in r["turns"])
+        lines.append(f"| {sid} | {sum(1 for r in rs if r['outcome'] == 'ok')}/{len(rs)} | {', '.join(f'{k}×{v}' for k, v in outs.items())} | {secs[len(secs) // 2]} | {turn_max} | {hops} | {job_max} |")
     lines += ["", "## Failures", ""]
     for r in results:
         if r["outcome"] != "ok":

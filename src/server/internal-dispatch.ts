@@ -70,9 +70,14 @@ const isUser = (u: unknown): u is ScopeUser =>
 
 function isTask(t: unknown): t is InternalTask {
 	const task = t as { kind?: unknown; jobId?: unknown; chatId?: unknown } | null;
+	// Every task kind must be listed here, or the receiver refuses it (401).
 	if (!task) return false;
 	if (task.kind === "job") return typeof task.jobId === "string" && /^[A-Za-z0-9_-]+$/.test(task.jobId);
 	if (task.kind === "deliver" || task.kind === "extract") return typeof task.chatId === "string" && /^[A-Za-z0-9_-]+$/.test(task.chatId);
+	if (task.kind === "continue") {
+		const hop = (t as { hop?: unknown }).hop;
+		return typeof task.chatId === "string" && /^[A-Za-z0-9_-]+$/.test(task.chatId) && typeof hop === "number" && Number.isInteger(hop) && hop >= 1 && hop <= 10;
+	}
 	return false;
 }
 

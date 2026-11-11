@@ -249,6 +249,16 @@ describe("internal dispatch envelopes", () => {
 		assert.equal(verifyEnvelope(signed.body, signed.signature, now + 5_000, env), null, "expired");
 		assert.equal(verifyEnvelope(signed.body, null, now, env), null, "unsigned");
 		assert.equal(verifyEnvelope(signed.body, signed.signature, now, { CRON_SECRET: "other" }), null, "wrong key");
+		// Every task kind the server dispatches must verify on the receiver
+		// (a missing kind is refused with 401 — the turn-continuation bug).
+		for (const task of [{ kind: "deliver", chatId: "chat_1" }, { kind: "extract", chatId: "chat_1" }, { kind: "continue", chatId: "chat_1", hop: 1 }] as const) {
+			const ok = signEnvelope({ task, user: null, exp: now + 1_000 }, env)!;
+			assert.deepEqual(verifyEnvelope(ok.body, ok.signature, now, env)?.task, task, `${task.kind} verifies`);
+		}
+		for (const hop of [0, 1.5, "1", 11]) {
+			const badHop = signEnvelope({ task: { kind: "continue", chatId: "chat_1", hop } as never, user: null, exp: now + 1_000 }, env)!;
+			assert.equal(verifyEnvelope(badHop.body, badHop.signature, now, env), null, `continue hop ${String(hop)} refused`);
+		}
 		const bad = signEnvelope({ task: { kind: "job", jobId: "../etc" }, user: null, exp: now + 1_000 }, env)!;
 		assert.equal(verifyEnvelope(bad.body, bad.signature, now, env), null, "unsafe id");
 		assert.equal(signEnvelope({ task: { kind: "deliver", chatId: "c" }, user: null, exp: now }, {}), null);

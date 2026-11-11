@@ -173,8 +173,17 @@ const continuationHop = new AsyncLocalStorage<number>();
 async function continueTurn(chatId: string, hop: number, buildAgent?: ContinuationAgentBuilder): Promise<void> {
 	for (let i = 0; i < 100 && runningTurn(chatId); i++) await new Promise((r) => setTimeout(r, 50));
 	if (dispatchTarget() && await dispatchInternal({ kind: "continue", chatId, hop })) return;
-	await runContinuation(chatId, hop, buildAgent);
+	// In-process fallback (no dispatch target, or the dispatch was refused):
+	// it shares THIS invocation's leftovers. With too little left to make
+	// progress, run it as the FINAL hop: it stops at once with the honest
+	// out-of-time message instead of burning every remaining hop in a second.
+	const budget = turnBudgetMs();
+	const starved = budget !== undefined && remainingInvocationBudget(budget, Date.now(), 0) < MIN_CONTINUATION_MS;
+	await runContinuation(chatId, starved ? Math.max(hop, turnContinuationLimit()) : hop, buildAgent);
 }
+
+/** Below this much invocation time an in-process continuation can't make progress. */
+const MIN_CONTINUATION_MS = 30_000;
 
 type ContinuationAgentBuilder = (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent;
 

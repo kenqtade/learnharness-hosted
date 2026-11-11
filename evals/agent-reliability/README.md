@@ -56,6 +56,13 @@ The learner always answers "I don't know" (`dontKnow`) and asks the prober
 to start teaching, so scenarios reach the teacher in a bounded number of
 rounds.
 
+A turn that reaches its deadline is **continued** by the server: it saves a
+"continues automatically" notice and resumes from its last finished step in
+a fresh invocation, up to 2 times (`LH_TURN_CONTINUATIONS`). The eval waits
+through those notices and reports how many each scenario needed (the
+`continuations` column); only a turn still unfinished after the last run is a
+`turn-error`.
+
 ## Outcomes
 
 | outcome | meaning |
@@ -64,7 +71,7 @@ rounds.
 | `turn-http` | POST /api/chat refused the turn |
 | `turn-lost` | the turn vanished with no saved reply (killed at the wall) |
 | `turn-stuck` | still "in flight" past the wall |
-| `turn-error` | the turn saved an error (e.g. `Request timed out.`, or the explained out-of-time message) |
+| `turn-error` | the turn saved an error (e.g. `Request timed out.`, or the explained out-of-time message after the last continuation) |
 | `probe-not-finished` | the prober never handed off (model behaviour, not infrastructure) |
 | `tool-not-called` | the teacher never called the requested sub-agent (model behaviour) |
 | `job-stuck` / `job-timeout` | the job stayed running past `--job-limit` |
