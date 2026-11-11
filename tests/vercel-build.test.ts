@@ -11,14 +11,22 @@ import { describe, it } from "node:test";
 
 const SCRIPT = path.join(import.meta.dirname, "..", "scripts", "vercel-build.sh");
 
-function build(mergeExit: number, env: Record<string, string> = { LH_AUTO_UPDATE: "1", VERCEL: "1" }, opts: { tscFails?: boolean; lockFlag?: boolean } = {}) {
+function build(mergeExit: number, env: Record<string, string> = { LH_AUTO_UPDATE: "1", VERCEL: "1" }, opts: { tscFails?: boolean; lockFlag?: boolean; marker?: boolean } = {}) {
 	const t = fs.mkdtempSync(path.join(os.tmpdir(), "vbuild-"));
+	fs.writeFileSync(path.join(t, "source.txt"), "ours\n");
 	fs.mkdirSync(path.join(t, "scripts"));
 	fs.mkdirSync(path.join(t, "bin"));
 	fs.copyFileSync(SCRIPT, path.join(t, "scripts", "vercel-build.sh"));
 	if (opts.lockFlag) fs.writeFileSync(path.join(t, ".lock-regenerated"), "1\n");
 	const stub = (name: string, body: string) => fs.writeFileSync(path.join(t, "bin", name), `#!/bin/sh\necho "${name} $*" >> "${t}/calls"\n${body}\n`, { mode: 0o755 });
-	stub("node", `exit ${mergeExit}`);
+	// The merge stub rewrites our source (as a real merge does) and, for a
+	// failed merge, leaves the blocked-update marker like upstream-merge.mjs.
+	stub("node", `if [ "$1" = "scripts/upstream-merge.mjs" ]; then
+  [ ${mergeExit} -eq 0 ] && echo merged > source.txt
+  ${opts.marker ? `echo '{"release":"v9.9.9","reason":"Merge conflicts: a.ts"}' > .upstream-blocked.json` : ":"}
+  exit ${mergeExit}
+fi
+exit 0`);
 	stub("npm", "exit 0");
 	stub("npx", opts.tscFails ? `case "$*" in *tsc*) exit 1;; esac; exit 0` : "exit 0");
 	const r = spawnSync("bash", [path.join(t, "scripts", "vercel-build.sh")], {
@@ -26,8 +34,10 @@ function build(mergeExit: number, env: Record<string, string> = { LH_AUTO_UPDATE
 		env: { PATH: `${path.join(t, "bin")}:/usr/bin:/bin`, ...env } as unknown as NodeJS.ProcessEnv,
 	});
 	const calls = fs.existsSync(path.join(t, "calls")) ? fs.readFileSync(path.join(t, "calls"), "utf-8") : "";
+	const source = fs.readFileSync(path.join(t, "source.txt"), "utf-8").trim();
+	const marker = fs.existsSync(path.join(t, ".upstream-blocked.json")) ? fs.readFileSync(path.join(t, ".upstream-blocked.json"), "utf-8") : null;
 	fs.rmSync(t, { recursive: true, force: true });
-	return { status: r.status, out: r.stdout + r.stderr, calls };
+	return { status: r.status, out: r.stdout + r.stderr, calls, source, marker };
 }
 
 describe("scripts/vercel-build.sh", () => {
@@ -55,15 +65,28 @@ describe("scripts/vercel-build.sh", () => {
 		assert.match(r.calls, /^npm install/m);
 		assert.doesNotMatch(r.calls, /npm ci/);
 	});
-	it("merged but does not type-check: refuses to ship (no build)", () => {
+	it("merged but does not type-check: restores OUR tree and builds the current code", () => {
 		const r = build(0, undefined, { tscFails: true });
-		assert.equal(r.status, 1);
-		assert.match(r.out, /refusing to ship/);
-		assert.doesNotMatch(r.calls, /next build/);
+		assert.equal(r.status, 0, r.out);
+		assert.match(r.out, /does not type-check — building the CURRENT code/);
+		assert.equal(r.source, "ours", "the merged tree was rolled back");
+		assert.ok(r.calls.indexOf("npx next build") > r.calls.indexOf("npx tsc --noEmit"), r.calls);
 	});
-	it("merge conflict (exit 2): fails without building, old deployment stays live", () => {
-		const r = build(2);
-		assert.equal(r.status, 1);
-		assert.doesNotMatch(r.calls, /next build/);
+	it("merge conflict (exit 11): builds the current code and keeps the blocked-update marker", () => {
+		const r = build(11, undefined, { marker: true });
+		assert.equal(r.status, 0, r.out);
+		assert.match(r.calls, /^npx next build$/m);
+		assert.equal(r.source, "ours");
+		assert.match(r.marker ?? "", /"release":"v9\.9\.9".*Merge conflicts: a\.ts/);
+	});
+	it("an unexpected merge-script failure (exit 1) still ships the current code", () => {
+		const r = build(1);
+		assert.equal(r.status, 0, r.out);
+		assert.match(r.calls, /^npx next build$/m);
+		assert.equal(r.source, "ours");
+	});
+	it("a clean run removes a stale marker from an earlier build", () => {
+		const r = build(10);
+		assert.equal(r.marker, null);
 	});
 });

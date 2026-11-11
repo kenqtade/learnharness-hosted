@@ -89,17 +89,20 @@ describe("upstream-merge.mjs end to end", () => {
 		}
 	});
 
-	it("real conflict: exit 2 and our tree is left untouched", () => {
+	it("real conflict: exit 11, our tree is left untouched, the blocked-update marker names the release", () => {
 		const r = run({
 			base: { "next.config.ts": LINES },
 			latest: { "next.config.ts": LINES.replace("A", "A-up") },
 			ours: { "next.config.ts": LINES.replace("A", "A-ours") },
 		});
 		try {
-			assert.equal(r.status, 2, r.out);
+			assert.equal(r.status, 11, r.out);
 			assert.match(r.out, /next\.config\.ts/);
 			assert.equal(r.read("next.config.ts"), LINES.replace("A", "A-ours"));
 			assert.equal(JSON.parse(r.read("upstream.json")!).base, "v1.0.0");
+			const marker = JSON.parse(r.read(".upstream-blocked.json")!) as { release: string; reason: string };
+			assert.match(marker.release, /^v\d/);
+			assert.match(marker.reason, /Merge conflicts: next\.config\.ts/);
 		} finally {
 			r.cleanup();
 		}

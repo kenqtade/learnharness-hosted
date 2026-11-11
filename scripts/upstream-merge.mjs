@@ -132,6 +132,18 @@ function extractTarball(tarballPath, destDir) {
 	execFileSync("tar", ["-xzf", tarballPath, "--strip-components=1", "-C", destDir], { stdio: "inherit" });
 }
 
+/** BLOCKED-UPDATE MARKER (2026-11-11): a newer release that cannot be merged
+ *  automatically must not block deploying the current code. The marker is
+ *  baked into the build (next.config.ts → LH_UPSTREAM_BLOCKED) so the update
+ *  check reports "needs a manual merge" instead of re-triggering rebuilds. */
+function writeBlockedMarker(release, reason) {
+	try {
+		fs.writeFileSync(path.join(ROOT, ".upstream-blocked.json"), JSON.stringify({ release, reason: String(reason).slice(0, 600), at: new Date().toISOString() }) + "\n");
+	} catch (e) {
+		log(`Could not write the blocked-update marker: ${e.message}`);
+	}
+}
+
 async function main() {
 	const upstreamJsonPath = path.join(ROOT, "upstream.json");
 	if (!fs.existsSync(upstreamJsonPath)) {
@@ -146,7 +158,7 @@ async function main() {
 	// share 60 requests/hour — or a network blip) is not a failed merge:
 	// build today's code and let the next check try again. Only a merge
 	// that actually started and failed may fail the build (exit 2).
-	let latestRelease;
+	let latestRelease = { tag: "unknown" };
 	try {
 		latestRelease = getLatestReleaseVersion()
 			? { tag: getLatestReleaseVersion(), version: getLatestReleaseVersion() }
@@ -335,7 +347,11 @@ async function main() {
 		process.exit(0);
 	} catch (err) {
 		log(`Merge failed: ${err.message}`);
-		process.exit(2);
+		// The working tree is untouched (the merged tree is only copied in
+		// after a clean merge): record WHY so the running app can say so,
+		// and let the build ship the current code (exit 11).
+		writeBlockedMarker(latestRelease.tag, err.message);
+		process.exit(11);
 	}
 }
 

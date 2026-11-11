@@ -3,6 +3,11 @@ import type { NextConfig } from "next";
 import { MAX_IMPORT_BODY_BYTES } from "./lib/notes-import-limits.ts";
 
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string; homepage: string };
+// Auto-update: a newer upstream release the build could not merge (written by
+// scripts/upstream-merge.mjs / vercel-build.sh). Baked into the server so the
+// update check says "needs a manual merge" instead of rebuilding in a loop.
+let upstreamBlocked = "";
+try { upstreamBlocked = readFileSync(new URL("./.upstream-blocked.json", import.meta.url), "utf8").trim(); } catch { /* none */ }
 
 const nextConfig: NextConfig = {
 	// Public build metadata only; no new runtime Electron version API.
@@ -10,7 +15,7 @@ const nextConfig: NextConfig = {
 	// baked into BOTH the client bundle and the server; a page whose id
 	// differs from the server's was loaded from an older deployment.
 	// Locally (no Vercel) it is "dev" on both sides, so no banner.
-	env: { LH_VERSION: pkg.version, LH_HOMEPAGE: pkg.homepage, LH_BUILD_ID: process.env.VERCEL_DEPLOYMENT_ID || "dev" },
+	env: { LH_VERSION: pkg.version, LH_HOMEPAGE: pkg.homepage, LH_BUILD_ID: process.env.VERCEL_DEPLOYMENT_ID || "dev", LH_UPSTREAM_BLOCKED: upstreamBlocked },
 	// Leave multipart headroom above the 25 MiB file allowance. This is a
 	// proxy buffer, not a rejection gate: the import route also bounds reads,
 	// validates actual file bytes and handles incomplete multipart bodies.

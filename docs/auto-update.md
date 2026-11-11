@@ -44,7 +44,9 @@
 
 ## What happens on a conflict
 
-If the auto-merge encounters conflicts (different code on the same lines), the build fails. The previous deployment remains live. Check Vercel's build logs to see which files conflicted, then fix the conflict locally and redeploy.
+If the auto-merge encounters conflicts (different code on the same lines), the build **ships the current code instead** (changed 2026-11-11: v0.6.0 conflicted in 12 files, and failing the build blocked every deploy, including our own fixes). The merge script exits 11 and writes `.upstream-blocked.json` (`{release, reason, at}`). `next.config.ts` bakes it into the server as `LH_UPSTREAM_BLOCKED`, and the update check then reports `update-failed` with "vX could not be merged automatically… once the branch is merged with vX by hand, updates continue automatically". It does **not** trigger the same failing rebuild again. A release newer than the blocked one is tried normally.
+
+To clear it: merge the release into the branch by hand, set `upstream.json` `base` to that tag, and deploy.
 
 ## Safety gates (what stops an unsafe update)
 
@@ -53,7 +55,7 @@ Even a merge with no text conflicts can be wrong for the hosted app, so after a 
 1. **Storage seam check** (`tests/storage-seam.test.ts`): no file in `src/store/` may use `node:fs` directly. On Vercel every save must go through `src/store/vfs.ts`, which writes to Convex. Anything else writes to a throwaway disk and the data disappears.
 2. **Type check** (`tsc --noEmit`).
 
-If either check fails, the build stops with "refusing to ship" and **the previous deployment stays live**. Nothing is lost.
+If either check fails (or the merged release fails to install or build), `scripts/vercel-build.sh` **restores the pre-merge tree** (it snapshots it before merging), writes the same blocked-update marker, and builds the current code. Nothing is lost, and deploys are never blocked by an upstream release.
 
 ## Status: ported to v0.5.0
 

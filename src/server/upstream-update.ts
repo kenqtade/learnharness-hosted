@@ -62,6 +62,8 @@ const STATUS_FILE = path.join(PLATFORM_ROOT, "update-status.json");
  *  so a mismatch means a newer deployment is live. */
 // Literal `process.env.LH_BUILD_ID`: next build inlines exactly this form.
 const BAKED_BUILD_ID = process.env.LH_BUILD_ID;
+// Literal form again: the blocked-update marker the build baked in.
+const BAKED_UPSTREAM_BLOCKED = process.env.LH_UPSTREAM_BLOCKED;
 export function runningBuildId(env: Record<string, string | undefined> = process.env): string {
 	return env.LH_BUILD_ID || BAKED_BUILD_ID || env.VERCEL_DEPLOYMENT_ID || "dev";
 }
@@ -264,6 +266,23 @@ export async function triggerRedeploy(deps: UpdateDeps = {}): Promise<{ url: str
 
 const MS_IN_24H = 24 * 60 * 60 * 1000;
 
+/** A release this deployment's build could not merge (see next.config.ts). */
+export function blockedUpdate(env: Record<string, string | undefined> = process.env): { release: string; reason: string } | null {
+	const raw = env.LH_UPSTREAM_BLOCKED;
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as { release?: unknown; reason?: unknown };
+		return typeof parsed.release === "string" ? { release: parsed.release, reason: typeof parsed.reason === "string" ? parsed.reason : "" } : null;
+	} catch {
+		return null;
+	}
+}
+
+export function blockedUpdateMessage(release: string, reason: string): string {
+	const why = reason ? ` (${reason.length > 240 ? `${reason.slice(0, 240)}…` : reason})` : "";
+	return `${release} could not be merged automatically with this server's changes${why}. This version stays in use; once the branch is merged with ${release} by hand, updates continue automatically.`;
+}
+
 export async function runUpdateCheck(deps: UpdateDeps = {}): Promise<UpdateStatus> {
 	const env = deps.env ?? process.env;
 	const now = deps.now ?? Date.now;
@@ -297,6 +316,15 @@ export async function runUpdateCheck(deps: UpdateDeps = {}): Promise<UpdateStatu
 	const latest = release.version;
 	if (compareVersions(latest, current) <= 0) {
 		const record: UpdateStatus = { ...base, state: "up-to-date", latest, checkedAt: new Date(now()).toISOString(), message: `Up to date (latest upstream release: ${latest}).` };
+		writeStatus(record);
+		return record;
+	}
+
+	// The build already tried this release and could not merge it: report
+	// it plainly instead of triggering the same failing rebuild again.
+	const blocked = blockedUpdate(deps.env ?? { LH_UPSTREAM_BLOCKED: BAKED_UPSTREAM_BLOCKED });
+	if (blocked && compareVersions(blocked.release, latest) >= 0) {
+		const record: UpdateStatus = { ...base, state: "update-failed", latest, checkedAt: new Date(now()).toISOString(), message: blockedUpdateMessage(blocked.release, blocked.reason) };
 		writeStatus(record);
 		return record;
 	}

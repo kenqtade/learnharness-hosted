@@ -12,6 +12,7 @@ import {
 	readUpdateStatus,
 	runUpdateCheck,
 	triggerRedeploy,
+	blockedUpdate,
 	secretMatches,
 	cronSecretMatches,
 } from "../src/server/upstream-update.ts";
@@ -205,6 +206,30 @@ describe("runUpdateCheck integration tests", () => {
 			});
 			assert.equal(result1.state, "up-to-date");
 			assert.ok(result1.checkedAt);
+		});
+	});
+
+	describe("blocked update (a release the build could not merge)", () => {
+		it("reports update-failed with a manual-merge message and does NOT trigger another rebuild", async () => {
+			let calls = 0;
+			const mockFetch = async (url: string | URL | Request) => {
+				calls++;
+				assert.match(String(url), /api\.github\.com/, "only the release lookup — no Vercel redeploy call");
+				return new Response(JSON.stringify({ tag_name: "v99.0.0", published_at: "2026-11-11T00:00:00.000Z", html_url: "https://github.com/x/y/releases/tag/v99.0.0" }), { status: 200 });
+			};
+			const result = await runUpdateCheck({
+				now: () => 1_000_000_000_000,
+				fetch: mockFetch as typeof fetch,
+				env: { ...process.env, LH_AUTO_UPDATE: "1", LH_VERCEL_TOKEN: "t", LH_VERCEL_PROJECT_NAME: "p", LH_UPSTREAM_BLOCKED: JSON.stringify({ release: "v99.0.0", reason: "Merge conflicts: src/server/jobs.ts" }) },
+			});
+			assert.equal(result.state, "update-failed");
+			assert.match(result.message ?? "", /v99\.0\.0 could not be merged automatically.*Merge conflicts: src\/server\/jobs\.ts.*by hand/);
+			assert.equal(calls, 1);
+		});
+		it("a NEWER release than the blocked one is tried again", () => {
+			assert.equal(blockedUpdate({ LH_UPSTREAM_BLOCKED: "not json" }), null);
+			assert.deepEqual(blockedUpdate({ LH_UPSTREAM_BLOCKED: JSON.stringify({ release: "v0.6.0", reason: "x" }) }), { release: "v0.6.0", reason: "x" });
+			assert.equal(compareVersions("v0.6.0", "0.6.1") >= 0, false);
 		});
 	});
 
