@@ -254,7 +254,7 @@ function HostedUpdateRows({ version, homepage }: { version: string; homepage: st
 				testid="row-version"
 				hint={
 					<>
-						{line && <span className={`block ${warn ? "text-amber-400" : ""}`} role="status" data-testid="update-status">{line}</span>}
+						{line && <span className={`block ${warn ? "text-warning" : ""}`} role="status" data-testid="update-status">{line}</span>}
 						{live && <span className="block text-foreground" data-testid="update-live">Version {live.version} is live — refresh to load it.</span>}
 						{status?.enabled && status.checkedAt && (
 							<span className="block text-xs text-muted-foreground" data-testid="update-checked-at">Last checked: {formatCheckedAt(status.checkedAt)}</span>

@@ -15,7 +15,7 @@ const nextConfig: NextConfig = {
 	// baked into BOTH the client bundle and the server; a page whose id
 	// differs from the server's was loaded from an older deployment.
 	// Locally (no Vercel) it is "dev" on both sides, so no banner.
-	env: { LH_VERSION: pkg.version, LH_HOMEPAGE: pkg.homepage, LH_BUILD_ID: process.env.VERCEL_DEPLOYMENT_ID || "dev", LH_UPSTREAM_BLOCKED: upstreamBlocked },
+	env: { LH_VERSION: pkg.version, LH_HOMEPAGE: pkg.homepage, LH_BUILD_ID: process.env.VERCEL_DEPLOYMENT_ID || "dev", ...(upstreamBlocked ? { LH_UPSTREAM_BLOCKED: upstreamBlocked } : {}) },
 	// Leave multipart headroom above the 25 MiB file allowance. This is a
 	// proxy buffer, not a rejection gate: the import route also bounds reads,
 	// validates actual file bytes and handles incomplete multipart bodies.
