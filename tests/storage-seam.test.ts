@@ -17,10 +17,17 @@ import { test } from "node:test";
 const STORE_DIR = path.join(import.meta.dirname, "..", "src", "store");
 const FS_IMPORT = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)["'](?:node:)?fs(?:\/promises)?["']/;
 
+/** Plugin-platform record stores (upstream v0.6.0) need real-disk semantics
+ *  (directory fsync, exclusive opens) and only ever run when plugins are
+ *  allowed — never on a hosted server (src/server/plugins.ts pluginsAllowed;
+ *  pinned by tests/plugins-hosted-gate.test.ts). Named one by one so a NEW
+ *  upstream store that bypasses the seam still fails this gate. */
+const LOCAL_ONLY_PLUGIN_STORES = new Set(["plugin-agent-records.ts", "plugin-data-paths.ts", "plugin-task-records.ts"]);
+
 test("no store module touches node:fs directly (only vfs.ts may)", () => {
 	const offenders = fs
 		.readdirSync(STORE_DIR)
-		.filter((f) => f.endsWith(".ts") && f !== "vfs.ts")
+		.filter((f) => f.endsWith(".ts") && f !== "vfs.ts" && !LOCAL_ONLY_PLUGIN_STORES.has(f))
 		.filter((f) => FS_IMPORT.test(fs.readFileSync(path.join(STORE_DIR, f), "utf-8")));
 	assert.deepEqual(offenders, [], `these store files bypass the Convex storage seam (src/store/vfs.ts): ${offenders.join(", ")}`);
 });

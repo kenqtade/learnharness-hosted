@@ -550,6 +550,15 @@ function removeTemp(tmp: string): void {
 	}
 }
 
+/** Flush a DIRECTORY entry to disk (upstream v0.6.0: plugin-linked job
+ *  records must survive a crash). Seam-managed paths (Convex mode) have no
+ *  local directory to sync, and Windows has no directory fsync: no-op. */
+function fsyncDirSync(dir: string): void {
+	if (process.platform === "win32" || (convexMode && seamManaged(dir))) return;
+	const fd = realFs.openSync(dir, "r");
+	try { realFs.fsyncSync(fd); } finally { realFs.closeSync(fd); }
+}
+
 const vfs = {
 	existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync,
 	readdirSync, renameSync, unlinkSync, rmSync, chmodSync,
@@ -558,7 +567,7 @@ const vfs = {
 export {
 	existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync,
 	readdirSync, renameSync, unlinkSync, rmSync, chmodSync,
-	writeFileAtomicSync, removeLeftoverTemps,
+	writeFileAtomicSync, removeLeftoverTemps, fsyncDirSync,
 	lstatSync, statSync, accessSync, constants,
 };
 export default vfs;

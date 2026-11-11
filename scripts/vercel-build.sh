@@ -20,19 +20,33 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Upstream v0.6.0+: the root type check (tsc AND next build's) covers the
+# plugin sources, which need their own packages (npm run plugins:setup — what
+# upstream CI runs first). --include=dev: Vercel builds with
+# NODE_ENV=production, and the plugin SDK/types are devDependencies.
+setup_plugins() {
+	if node -e 'process.exit(require("./package.json").scripts?.["plugins:setup"] ? 0 : 1)' 2>/dev/null; then
+		npm_config_include=dev npm run plugins:setup
+	fi
+}
+build_app() {
+	setup_plugins
+	exec npx next build
+}
+
 if [ "${LH_AUTO_UPDATE:-}" != "1" ]; then
 	echo "Auto-update skipped: LH_AUTO_UPDATE is not set"
-	exec npx next build
+	build_app
 fi
 
 if [ -z "${VERCEL:-}" ]; then
 	echo "Auto-update skipped: not on Vercel (VERCEL env unset)"
-	exec npx next build
+	build_app
 fi
 
 if ! command -v git >/dev/null 2>&1; then
 	echo "Auto-update skipped: git not on PATH"
-	exec npx next build
+	build_app
 fi
 
 # Ship-the-current-code fallback (2026-11-11): an upstream release that cannot
@@ -54,8 +68,11 @@ restore_and_build_current() {
 	tar -xf "$SNAP"
 	if [ -n "$marker" ]; then printf '%s\n' "$marker" > .upstream-blocked.json
 	else node -e 'require("fs").writeFileSync(".upstream-blocked.json", JSON.stringify({release: process.argv[1] || "unknown", reason: process.argv[2], at: new Date().toISOString()}) + "\n")' "${LH_PENDING_RELEASE:-}" "$why"; fi
-	npm ci --no-audit --no-fund
-	exec npx next build
+	# Only a merged release's install changed node_modules: put OUR packages
+	# back. --include=dev: Vercel builds with NODE_ENV=production, and npm
+	# would otherwise drop the build tooling (tailwind/postcss, typescript).
+	if [ "${MERGED_INSTALL:-0}" = "1" ]; then npm ci --include=dev --no-audit --no-fund; fi
+	build_app
 }
 
 echo "[vercel-build] Running upstream merge..."
@@ -68,23 +85,25 @@ if [ $merge_status -eq 0 ]; then
 	echo "[vercel-build] Merge succeeded, installing dependencies..."
 	LH_PENDING_RELEASE="$(node -p 'require("./upstream.json").base' 2>/dev/null || true)"
 	export LH_PENDING_RELEASE
+	MERGED_INSTALL=1
 	if [ -f .lock-regenerated ]; then
 		rm -f .lock-regenerated
-		npm install --no-audit --no-fund || restore_and_build_current "the merged release's packages failed to install"
+		npm install --include=dev --no-audit --no-fund || restore_and_build_current "the merged release's packages failed to install"
 	else
-		npm ci --no-audit --no-fund || restore_and_build_current "the merged release's packages failed to install"
+		npm ci --include=dev --no-audit --no-fund || restore_and_build_current "the merged release's packages failed to install"
 	fi
 	# Safety gates run AFTER install (the release may add packages) and
 	# BEFORE build.
 	echo "[vercel-build] Running storage seam gate..."
-	npx tsx --test tests/storage-seam.test.ts || restore_and_build_current "the merged release bypasses the Convex storage seam"
+	npx tsx --test tests/storage-seam.test.ts tests/hosted-invariants.test.ts || restore_and_build_current "the merged release breaks a hosted-fork invariant (storage seam, withStore routes, host check, plugin gate)"
 	echo "[vercel-build] Running type check..."
+	setup_plugins || restore_and_build_current "the merged release's plugins failed to set up"
 	NODE_OPTIONS=--max-old-space-size=4096 npx tsc --noEmit || restore_and_build_current "the merged release does not type-check"
-	npx next build || restore_and_build_current "the merged release failed to build"
+	npx next build || restore_and_build_current "the merged release failed to build"  # plugins already set up above
 	exit 0
 elif [ $merge_status -eq 10 ]; then
 	echo "[vercel-build] No newer upstream release"
-	exec npx next build
+	build_app
 else
 	restore_and_build_current "upstream merge failed (exit $merge_status)"
 fi
