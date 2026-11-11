@@ -17,7 +17,14 @@ export interface ResolvedFileAccessPolicy {
 }
 
 const OPEN_POLICY: FileAccessPolicy = { restricted: false, folders: [] };
-let currentPolicy: () => FileAccessPolicy = () => OPEN_POLICY;
+/** HOSTED FORK: before the server wires its provider, a hosted process
+ *  (Vercel / LH_PROFILE=hosted / Convex store) is CLOSED, never open — the
+ *  server filesystem there is the shared container, not the learner's. */
+const CLOSED_POLICY: FileAccessPolicy = { restricted: true, folders: [] };
+const hostedProcess = (): boolean =>
+	process.env.LH_HOSTED_FILE_ACCESS !== "0" &&
+	(process.env.VERCEL === "1" || process.env.LH_PROFILE?.trim() === "hosted" || process.env.LH_STORE === "convex");
+let currentPolicy: () => FileAccessPolicy = () => (hostedProcess() ? CLOSED_POLICY : OPEN_POLICY);
 
 export function setFileAccessPolicy(provider: () => FileAccessPolicy): void { currentPolicy = provider; }
 

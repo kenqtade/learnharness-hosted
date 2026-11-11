@@ -105,7 +105,7 @@ describe("desktop semantics (no serverless env)", () => {
 		assert.equal(r.wanted, false, "a desktop process must not want the serverless Chromium");
 		// unavailableReason() depends only on the helper / system Chrome, never
 		// on the serverless package (which is not installed here).
-		assert.ok(r.reason === null || typeof r.reason === "string", r.reason);
+		assert.ok(r.reason === null || typeof r.reason === "string", String(r.reason));
 		if (r.helper || r.chrome) {
 			assert.equal(r.reason, null, "a resolvable helper/Chrome means no reason to complain");
 		} else {

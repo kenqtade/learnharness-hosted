@@ -110,7 +110,7 @@ if [ $merge_status -eq 0 ]; then
 	# Safety gates run AFTER install (the release may add packages) and
 	# BEFORE build.
 	echo "[vercel-build] Running storage seam gate..."
-	npx tsx --test tests/storage-seam.test.ts tests/hosted-invariants.test.ts || restore_and_build_current "the merged release breaks a hosted-fork invariant (storage seam, withStore routes, host check, plugin gate)"
+	npx tsx --test tests/storage-seam.test.ts tests/hosted-invariants.test.ts tests/hosted-file-access.test.ts || restore_and_build_current "the merged release breaks a hosted-fork invariant (storage seam, withStore routes, host check, plugin gate, learner-file confinement)"
 	echo "[vercel-build] Running type check..."
 	setup_plugins || restore_and_build_current "the merged release's plugins failed to set up"
 	NODE_OPTIONS=--max-old-space-size=4096 npx tsc --noEmit || restore_and_build_current "the merged release does not type-check"
