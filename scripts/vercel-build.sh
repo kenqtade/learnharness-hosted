@@ -29,8 +29,23 @@ setup_plugins() {
 		npm_config_include=dev npm run plugins:setup
 	fi
 }
+# Hosted demos (src/agent/subagents/headless.ts): a Vercel function has no
+# Electron helper and no system Chrome, so demos (mandatory browser
+# verification) and the visual maker's preflight failed every job. Install the
+# serverless Chromium for this build only: --no-save keeps package.json and the
+# lockfile (and so every upstream merge) untouched, desktop builds never see
+# it, and next.config copies it into the functions. --include=dev: under
+# NODE_ENV=production a plain install would prune the build tooling.
+# Non-fatal: without it the deploy still ships; demos report "no render engine".
+SERVERLESS_CHROMIUM_VERSION=153.0.0
+setup_serverless_chromium() {
+	[ -n "${VERCEL:-}" ] || return 0
+	npm install --no-save --include=dev --no-audit --no-fund "@sparticuz/chromium@$SERVERLESS_CHROMIUM_VERSION" \
+		|| echo "[vercel-build] WARNING: serverless Chromium failed to install; hosted demos will report no render engine"
+}
 build_app() {
 	setup_plugins
+	setup_serverless_chromium
 	exec npx next build
 }
 
@@ -99,6 +114,7 @@ if [ $merge_status -eq 0 ]; then
 	echo "[vercel-build] Running type check..."
 	setup_plugins || restore_and_build_current "the merged release's plugins failed to set up"
 	NODE_OPTIONS=--max-old-space-size=4096 npx tsc --noEmit || restore_and_build_current "the merged release does not type-check"
+	setup_serverless_chromium
 	npx next build || restore_and_build_current "the merged release failed to build"  # plugins already set up above
 	exit 0
 elif [ $merge_status -eq 10 ]; then

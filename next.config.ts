@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { NextConfig } from "next";
 import { MAX_IMPORT_BODY_BYTES } from "./lib/notes-import-limits.ts";
 
@@ -8,6 +8,30 @@ const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), 
 // update check says "needs a manual merge" instead of rebuilding in a loop.
 let upstreamBlocked = "";
 try { upstreamBlocked = readFileSync(new URL("./.upstream-blocked.json", import.meta.url), "utf8").trim(); } catch { /* none */ }
+
+// Hosted demos (src/agent/subagents/headless.ts): Vercel builds install
+// @sparticuz/chromium (scripts/vercel-build.sh) and load it through an opaque
+// require the tracer cannot follow, so copy it and its dependency closure into
+// the functions. Vercel builds only: desktop/local builds get nothing extra.
+function serverlessChromiumFiles(): string[] {
+	if (process.env.VERCEL !== "1") return [];
+	const out = new Set<string>();
+	const visit = (name: string, fromDir: string) => {
+		for (let dir = fromDir; ; dir = dir.slice(0, Math.max(dir.lastIndexOf("/node_modules/"), 0))) {
+			const candidate = `${dir ? `${dir}/` : ""}node_modules/${name}`;
+			if (existsSync(new URL(`./${candidate}/package.json`, import.meta.url))) {
+				if (out.has(candidate)) return;
+				out.add(candidate);
+				const meta = JSON.parse(readFileSync(new URL(`./${candidate}/package.json`, import.meta.url), "utf8")) as { dependencies?: Record<string, string> };
+				for (const dep of Object.keys(meta.dependencies ?? {})) visit(dep, candidate);
+				return;
+			}
+			if (!dir) return;
+		}
+	};
+	visit("@sparticuz/chromium", "");
+	return [...out].map(dir => `${dir}/**/*`);
+}
 
 const nextConfig: NextConfig = {
 	// Public build metadata only; no new runtime Electron version API.
@@ -120,6 +144,7 @@ const nextConfig: NextConfig = {
 			"node_modules/gcp-metadata/**/*",
 			"node_modules/json-bigint/**/*",
 			"node_modules/bignumber.js/**/*",
+			...serverlessChromiumFiles(),
 		],
 	},
 	// Framework-free core lives in src/ (plain TS, imported by routes and CLI alike).

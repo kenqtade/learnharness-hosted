@@ -114,6 +114,62 @@ const NO_CHROME_MESSAGE =
 	"Install Google Chrome or set CHROME_PATH to a Chrome executable. " +
 	"(Verification is mandatory — demos are never delivered untested.)";
 
+// ─── Serverless Chromium (hosted line: Vercel / Lambda) ──────────────────────
+// A hosted function has neither the Electron helper nor a system Chrome, so
+// every demo failed its mandatory verification (and the visual maker's
+// preflight refused too). There, the Vercel build installs
+// @sparticuz/chromium (scripts/vercel-build.sh; never a package.json dep, so
+// desktop builds ship nothing extra) and demos run in it. Loaded through an
+// opaque require so the bundler neither traces nor bundles it; next.config
+// copies its files into hosted functions only.
+
+const SERVERLESS_CHROMIUM_PACKAGE = "@sparticuz/chromium";
+
+/** Is this a serverless Linux host where the helper/system Chrome can't exist? (pure; exported for tests) */
+export function serverlessChromiumWanted(env: Record<string, string | undefined>, platform: string = process.platform): boolean {
+	if (platform !== "linux") return false;
+	return env.LH_SERVERLESS_CHROMIUM === "1" || (env.LH_SERVERLESS_CHROMIUM !== "0" && (env.VERCEL === "1" || !!env.AWS_LAMBDA_FUNCTION_NAME));
+}
+
+interface ServerlessChromium {
+	args: string[];
+	executablePath(): Promise<string>;
+}
+
+let serverlessChromiumModule: ServerlessChromium | null | undefined;
+
+function loadServerlessChromium(): ServerlessChromium | null {
+	if (serverlessChromiumModule !== undefined) return serverlessChromiumModule;
+	serverlessChromiumModule = null;
+	if (!serverlessChromiumWanted(process.env)) return null;
+	try {
+		const req = createRequire(import.meta.url);
+		const name = SERVERLESS_CHROMIUM_PACKAGE; // opaque on purpose (see above)
+		const mod = req(name) as { default?: ServerlessChromium } & Partial<ServerlessChromium>;
+		const chromium = (mod.default ?? mod) as ServerlessChromium;
+		if (typeof chromium.executablePath === "function" && Array.isArray(chromium.args)) serverlessChromiumModule = chromium;
+	} catch {
+		/* not installed (desktop / local): the normal helper → Chrome chain applies */
+	}
+	return serverlessChromiumModule;
+}
+
+/** Per-job launch of the serverless Chromium (old Chrome-fallback semantics). */
+async function withServerlessPage<T>(chromium: ServerlessChromium, fn: (page: import("puppeteer-core").Page) => Promise<T>): Promise<T> {
+	const puppeteer = (await import("puppeteer-core")).default;
+	const browser = await puppeteer.launch({
+		executablePath: await chromium.executablePath(),
+		args: chromium.args,
+		headless: "shell",
+	});
+	try {
+		const page = await browser.newPage();
+		return await fn(page);
+	} finally {
+		await browser.close().catch(() => {});
+	}
+}
+
 // ─── The app's own Chromium as a browser service (Wave E stage 3) ────────────
 // Demos execute JS and need a browser. PRIMARY: this very app's binary
 // spawned with --browser-service (main.cjs boots a hidden window with a CDP
@@ -246,6 +302,8 @@ async function connectBrowserService(): Promise<ConnectedBrowserService | null> 
 let helperPageChain: Promise<unknown> = Promise.resolve();
 
 async function withBrowserPage<T>(fn: (page: import("puppeteer-core").Page) => Promise<T>): Promise<T> {
+	const serverless = loadServerlessChromium();
+	if (serverless) return withServerlessPage(serverless, fn);
 	// Helper first (owner ruling 2026-10-10: the app's own Chromium primary,
 	// system Chrome fallback) — deterministic across users, zero install.
 	const run = async (): Promise<{ value: T } | null> => {
@@ -619,9 +677,10 @@ export const realHeadless: HeadlessApi = {
 	available() {
 		// The helper binary exists by construction in the packaged app; in dev
 		// it resolves via the electron package. System Chrome widens coverage.
-		return browserServiceBinary() !== null || resolveChromeExecutablePath() !== null;
+		return loadServerlessChromium() !== null || browserServiceBinary() !== null || resolveChromeExecutablePath() !== null;
 	},
 	unavailableReason() {
+		if (loadServerlessChromium()) return null;
 		return browserServiceBinary() === null && resolveChromeExecutablePath() === null ? NO_CHROME_MESSAGE : null;
 	},
 	runDemo,

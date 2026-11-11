@@ -79,7 +79,8 @@ describe("scripts/vercel-build.sh", () => {
 	it("merge conflict (exit 11): builds the current code and keeps the blocked-update marker", () => {
 		const r = build(11, undefined, { marker: true });
 		assert.equal(r.status, 0, r.out);
-		assert.doesNotMatch(r.calls, /^npm (ci|install)/m, "the tree was never touched: no reinstall (Vercel's install stays)");
+		// (the additive, --no-save serverless-Chromium install is not a reinstall)
+		assert.doesNotMatch(r.calls, /^npm (ci|install)(?! --no-save)/m, "the tree was never touched: no reinstall (Vercel's install stays)");
 		assert.match(r.calls, /^npx next build$/m);
 		assert.equal(r.source, "ours");
 		assert.match(r.marker ?? "", /"release":"v9\.9\.9".*Merge conflicts: a\.ts/);
