@@ -24,7 +24,9 @@ import { currentUser, type ScopeUser } from "../store/user-scope.ts";
 export type InternalTask =
 	| { kind: "job"; jobId: string }
 	| { kind: "deliver"; chatId: string }
-	| { kind: "extract"; chatId: string };
+	| { kind: "extract"; chatId: string }
+	/** Turn continuation: retry a deadline-paused turn in a fresh invocation. */
+	| { kind: "continue"; chatId: string; hop: number };
 
 export interface InternalEnvelope {
 	task: InternalTask;

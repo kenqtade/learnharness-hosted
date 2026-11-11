@@ -9,6 +9,10 @@ test("hosted request limits are opt-in: no env → pi-ai defaults untouched", ()
 test("LH_MODEL_TIMEOUT_MS / LH_MODEL_MAX_RETRIES map to pi-ai timeoutMs / maxRetries", () => {
 	assert.deepEqual(hostedRequestLimits({ LH_MODEL_TIMEOUT_MS: "120000", LH_MODEL_MAX_RETRIES: "1" }), { timeoutMs: 120000, maxRetries: 1 });
 	assert.deepEqual(hostedRequestLimits({ LH_MODEL_MAX_RETRIES: "0" }), { maxRetries: 0 });
+	// Vercel + a per-attempt timeout and no explicit count: one retry, not the SDK's two.
+	assert.deepEqual(hostedRequestLimits({ VERCEL: "1", LH_MODEL_TIMEOUT_MS: "60000" }), { timeoutMs: 60000, maxRetries: 1 });
+	assert.deepEqual(hostedRequestLimits({ VERCEL: "1", LH_MODEL_TIMEOUT_MS: "60000", LH_MODEL_MAX_RETRIES: "0" }), { timeoutMs: 60000, maxRetries: 0 });
+	assert.deepEqual(hostedRequestLimits({ VERCEL: "1" }), {}, "no timeout configured: SDK defaults untouched");
 });
 
 test("garbage values are ignored rather than passed through", () => {

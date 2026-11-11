@@ -26,7 +26,7 @@ import { createJobRunner, jobLeaseTuning, leaseHeldElsewhere, outOfTimeReason, r
 import { isJobLive, unregisterJobAbort } from "../src/agent/subagents/aborts.ts";
 import { recoverStaleJobs, setJobRespawn } from "../src/server/jobs.ts";
 import { dispatchTarget, signEnvelope, verifyEnvelope } from "../src/server/internal-dispatch.ts";
-import { handleChatRequest, jobBudgetMs, markTurnOutOfTime, outOfTimeTurnText, spawnEvalJob, turnBudgetMs } from "../src/server/chat-handler.ts";
+import { continuingTurnText, handleChatRequest, jobBudgetMs, markTurnOutOfTime, outOfTimeTurnText, spawnEvalJob, turnBudgetMs, turnContinuationLimit } from "../src/server/chat-handler.ts";
 import { routeAccess } from "../src/server/accounts.ts";
 import { runningTurn } from "../src/server/turn-runs.ts";
 import { invocationStartedAt, remainingInvocationBudget, runWithInvocationClock } from "../src/server/invocation-clock.ts";
@@ -329,6 +329,46 @@ describe("turn deadline", () => {
 		// Earlier (base) assistant messages are never rewritten.
 		const base = markTurnOutOfTime([aborted, user], 1, 1_000) as Array<Record<string, unknown>>;
 		assert.equal(base[0]!.stopReason, "aborted");
+	});
+
+	it("turn continuation: Vercel defaults to 2 fresh runs, env overrides, none locally", () => {
+		assert.equal(turnContinuationLimit({ VERCEL: "1" }), 2);
+		assert.equal(turnContinuationLimit({ VERCEL: "1", LH_TURN_CONTINUATIONS: "0" }), 0);
+		assert.equal(turnContinuationLimit({ LH_TURN_CONTINUATIONS: "1" }), 1);
+		assert.equal(turnContinuationLimit({ LH_TURN_CONTINUATIONS: "x" }), 0);
+		assert.equal(turnContinuationLimit({}), 0);
+		assert.match(continuingTurnText(270_000, 0, 2), /paused before the 270 s limit and continues automatically.*run 2 of at most 3/);
+		const user = { role: "user", content: "hi" };
+		const marked = markTurnOutOfTime([user], 1, 1_000, continuingTurnText(1_000, 0, 1)) as Array<Record<string, unknown>>;
+		assert.equal(marked[1]!.stopReason, "error", "a failed attempt, so Retry drops it from the next run's context");
+	});
+
+	it("end to end: a paused turn continues in a fresh run from its saved progress, then stops honestly at the cap", async () => {
+		process.env.OPENROUTER_API_KEY ??= "test-key-presence-gate";
+		const prev = { budget: process.env.LH_TURN_BUDGET_MS, hops: process.env.LH_TURN_CONTINUATIONS };
+		process.env.LH_TURN_BUDGET_MS = "200";
+		process.env.LH_TURN_CONTINUATIONS = "1";
+		try {
+			const chat = chatStore.createChat("Test: turn continuation e2e");
+			chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
+			const engine = hungEngine();
+			let builds = 0;
+			const agent: Parameters<typeof handleChatRequest>[1] = (opts) => { builds++; return createTeacherAgent(undefined, { engine, tools: {}, messages: opts.messages }); };
+			const req = new Request("http://test/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chatId: chat.id, input: { type: "text", text: "teach me" } }) });
+			const ack = await handleChatRequest(req, agent);
+			assert.equal(ack.status, 200);
+			const errors = () => (chatStore.getChat(chat.id)!.messages as Array<{ role?: string; stopReason?: string; errorMessage?: string }>)
+				.filter((m) => m.role === "assistant" && m.stopReason === "error").map((m) => m.errorMessage);
+			for (let i = 0; i < 400 && errors().length < 2; i++) await new Promise((r) => setTimeout(r, 25));
+			for (let i = 0; i < 200 && runningTurn(chat.id); i++) await new Promise((r) => setTimeout(r, 25));
+			assert.deepEqual(errors(), [continuingTurnText(200, 0, 1), outOfTimeTurnText(200)], "run 1 pauses and hands over; run 2 (the cap) stops with the explained error");
+			assert.equal(builds, 2, "the continuation is a second, fresh run");
+			const users = (chatStore.getChat(chat.id)!.messages as Array<{ role?: string }>).filter((m) => m.role === "user");
+			assert.equal(users.length, 1, "the learner's input is never replayed");
+		} finally {
+			if (prev.budget === undefined) delete process.env.LH_TURN_BUDGET_MS; else process.env.LH_TURN_BUDGET_MS = prev.budget;
+			if (prev.hops === undefined) delete process.env.LH_TURN_CONTINUATIONS; else process.env.LH_TURN_CONTINUATIONS = prev.hops;
+		}
 	});
 
 	it("end to end: a hung teacher is stopped at the budget and the record ends with the explained error", async () => {

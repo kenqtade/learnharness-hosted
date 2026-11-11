@@ -12,7 +12,7 @@ try { upstreamBlocked = readFileSync(new URL("./.upstream-blocked.json", import.
 // Hosted demos (src/agent/subagents/headless.ts): Vercel builds install
 // @sparticuz/chromium (scripts/vercel-build.sh) and load it through an opaque
 // require the tracer cannot follow, so copy it and its dependency closure into
-// the functions. Vercel builds only: desktop/local builds get nothing extra.
+// the job route's function. Vercel builds only: desktop/local builds get nothing extra.
 function serverlessChromiumFiles(): string[] {
 	if (process.env.VERCEL !== "1") return [];
 	const out = new Set<string>();
@@ -31,6 +31,10 @@ function serverlessChromiumFiles(): string[] {
 	};
 	visit("@sparticuz/chromium", "");
 	return [...out].map(dir => `${dir}/**/*`);
+}
+function serverlessChromiumRoute(): Record<string, string[]> {
+	const files = serverlessChromiumFiles();
+	return files.length ? { "/api/internal/run": files } : {};
 }
 
 const nextConfig: NextConfig = {
@@ -144,8 +148,11 @@ const nextConfig: NextConfig = {
 			"node_modules/gcp-metadata/**/*",
 			"node_modules/json-bigint/**/*",
 			"node_modules/bignumber.js/**/*",
-			...serverlessChromiumFiles(),
 		],
+		// Hosted demos: ONLY the route where dispatched jobs run. Adding ~70 MB
+		// to every route stops Vercel from packing routes into shared
+		// functions (Hobby caps a deployment at 12).
+		...(serverlessChromiumRoute()),
 	},
 	// Framework-free core lives in src/ (plain TS, imported by routes and CLI alike).
 	// The pi engine must stay external: its providers are runtime-loaded Node

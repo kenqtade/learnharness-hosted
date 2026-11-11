@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
 	createPracticeAgent,
@@ -63,7 +64,7 @@ import { applyParkedDismissal } from "./dismissal-park.ts";
 import { sideConversationEntries } from "../core/side-chat.ts";
 import { sideChats, type SideChatService } from "./side-chat.ts";
 import { SIDE_CONTEXT_BUDGET_ERROR, sideBudgetRetryDrops, sideContextWindow } from "./side-context-budget.ts";
-import { registerTurn, rememberTurnFailure, unregisterTurn } from "./turn-runs.ts";
+import { registerTurn, rememberTurnFailure, runningTurn, unregisterTurn } from "./turn-runs.ts";
 import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-service.ts";
 import { hasProbeDone, hasUnresolvedQuestion, pendingPluginQuestionOf, pluginQuestionCallsOf, questionCallsOf } from "../core/native-messages.ts";
 import { samePluginQuestionOccurrence } from "../core/plugin-questions.ts";
@@ -142,12 +143,52 @@ export function outOfTimeTurnText(budgetMs: number): string {
 	return `This reply ran out of time: the model had not finished within the server's ${Math.round(budgetMs / 1000)} s time budget, so the turn was stopped before the hard limit. Send your message again, or pick a faster model in Settings.`;
 }
 
+/** TURN CONTINUATION (reliability wave, 2026-11). A turn that reaches its
+ *  deadline is not lost work: every finished model call and tool result is
+ *  saved, and the stopped tail is marked as a failed attempt. Up to this many
+ *  times per learner input, the server then RETRIES it in a fresh invocation
+ *  (internal dispatch → input {type:"retry"}): Retry drops only the failed
+ *  tail from the agent's context, so the model resumes from its last finished
+ *  step with a whole new budget. LH_TURN_CONTINUATIONS overrides; Vercel
+ *  defaults to 2 (3 runs ≈ 13 minutes); none locally (no wall). */
+export function turnContinuationLimit(env: Record<string, string | undefined> = process.env): number {
+	const raw = env.LH_TURN_CONTINUATIONS;
+	if (raw !== undefined && raw !== "" && Number.isInteger(Number(raw)) && Number(raw) >= 0) return Number(raw);
+	return env.VERCEL ? 2 : 0;
+}
+
+/** The learner-facing text of a turn paused at its deadline that continues
+ *  automatically (`hop` = continuations already done before this pause). */
+export function continuingTurnText(budgetMs: number, hop: number, limit: number): string {
+	return `This reply needed more time than one server run allows: it was paused before the ${Math.round(budgetMs / 1000)} s limit and continues automatically in a fresh run (run ${hop + 2} of at most ${limit + 1}). Nothing finished so far is lost.`;
+}
+
+/** The continuation hop the current turn runs as (0 = the learner's own input). */
+const continuationHop = new AsyncLocalStorage<number>();
+
+/** Retry a deadline-paused turn as continuation `hop`: in a FRESH invocation
+ *  when the host has a wall, else (or when the dispatch fails) in-process.
+ *  Waits for the paused turn to leave the registry first, so the retry's
+ *  claim never collides with its own predecessor on this instance. */
+async function continueTurn(chatId: string, hop: number, buildAgent?: ContinuationAgentBuilder): Promise<void> {
+	for (let i = 0; i < 100 && runningTurn(chatId); i++) await new Promise((r) => setTimeout(r, 50));
+	if (dispatchTarget() && await dispatchInternal({ kind: "continue", chatId, hop })) return;
+	await runContinuation(chatId, hop, buildAgent);
+}
+
+type ContinuationAgentBuilder = (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent;
+
+async function runContinuation(chatId: string, hop: number, buildAgent?: ContinuationAgentBuilder): Promise<void> {
+	const response = await continuationHop.run(hop, () => handleChatInput(chatId, { type: "retry" }, buildAgent));
+	if (!response.ok) console.error(`[chat ${chatId}] turn continuation ${hop} not started: ${response.status} ${await response.text().catch(() => "")}`);
+	else console.info(`[chat ${chatId}] turn continuation ${hop} started`);
+}
+
 /** Turn the aborted tail of a deadline-stopped turn into an explained
  *  error (the last new assistant message, or a fresh one when the model
  *  never produced any). Pure: returns a new array. */
-export function markTurnOutOfTime<T>(messages: readonly T[], baseCount: number, budgetMs: number): T[] {
+export function markTurnOutOfTime<T>(messages: readonly T[], baseCount: number, budgetMs: number, text: string = outOfTimeTurnText(budgetMs)): T[] {
 	const out = [...messages];
-	const text = outOfTimeTurnText(budgetMs);
 	// Only the TAIL is rewritten: when the turn ended on a tool result (the
 	// next model call is what hung), an explained reply is appended instead,
 	// so the record always ends on the learner-facing error.
@@ -326,6 +367,7 @@ export async function runInternalTask(body: string, signature: string | null): P
 			})();
 		}
 		if (task.kind === "deliver") return resumeDeliveries(task.chatId);
+		if (task.kind === "continue") return runContinuation(task.chatId, task.hop);
 		return extraction.runExtraction(task.chatId);
 	};
 	const run = () => void keepAlive(work()).catch((err: unknown) => console.error(`[internal ${task.kind}] failed:`, err));
@@ -1106,6 +1148,10 @@ export async function handleChatInput(
 		// slow model ends in a saved, explained error instead of a silent kill
 		// that leaves no message at all.
 		const turnBudget = turnBudgetMs();
+		// TURN CONTINUATION: which run of this learner input this is, and
+		// whether a deadline pause may hand over to one more fresh run.
+		const turnHop = continuationHop.getStore() ?? 0;
+		const turnContinuations = turnContinuationLimit();
 		let turnDeadlineHit = false;
 		let turnDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
 		const turnSpec: Omit<PiTurnSpec, "agent" | "requestCycle"> = {
@@ -1155,7 +1201,13 @@ export async function handleChatInput(
 			onFinish: (rawTurnMessages, isAborted) => {
 				if (turnDeadlineTimer) clearTimeout(turnDeadlineTimer);
 				if (preparation && !preparation.isCurrent()) return;
-				const turnMessages = turnDeadlineHit ? markTurnOutOfTime(rawTurnMessages, persistBaseCount, turnBudget ?? 0) : rawTurnMessages;
+				const continuing = turnDeadlineHit && turnHop < turnContinuations;
+				const turnMessages = turnDeadlineHit
+					? markTurnOutOfTime(rawTurnMessages, persistBaseCount, turnBudget ?? 0, continuing ? continuingTurnText(turnBudget ?? 0, turnHop, turnContinuations) : undefined)
+					: rawTurnMessages;
+				// After this settle completes (persisted, unregistered), the
+				// paused turn resumes in a fresh run with a whole budget.
+				if (continuing) void keepAlive(new Promise((r) => setTimeout(r, 0)).then(() => continueTurn(chatId, turnHop + 1, buildAgent)).catch((err: unknown) => console.error(`[chat ${chatId}] turn continuation failed:`, err)));
 				// Wave B: append only messages past the temporary agent prefix.
 				// Retry's saved record still includes its earlier failed attempts.
 				// Unadmitted reference entries cannot become delivery watermarks

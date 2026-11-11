@@ -191,6 +191,11 @@ export function hostedRequestLimits(env: Record<string, string | undefined> = pr
 	if (Number.isFinite(timeout) && timeout > 0) out.timeoutMs = timeout;
 	const retries = env.LH_MODEL_MAX_RETRIES;
 	if (retries !== undefined && retries !== "" && Number.isInteger(Number(retries)) && Number(retries) >= 0) out.maxRetries = Number(retries);
+	// A walled host (Vercel) with a per-attempt timeout but no explicit retry
+	// count: one retry, not the SDK's two. Three hung attempts at the timeout
+	// (3 × 60 s) used most of a 270 s turn on a single stuck request; a turn
+	// that still runs out continues in a fresh run (turn continuation).
+	else if (env.VERCEL && out.timeoutMs !== undefined) out.maxRetries = 1;
 	return out;
 }
 
