@@ -231,6 +231,7 @@ class Run:
                 if j.get("activity") and (not r["activity"] or r["activity"][-1] != j["activity"]):
                     r["activity"].append(j["activity"][:80])
                 r["maxStall"] = max(r["maxStall"], round(now - r["lastChange"]))
+                r["attempts"] = max(r.get("attempts") or 0, j.get("attempts") or 0)
                 r.update(status=j["status"], error=(j.get("error") or "")[:300], delivery=(j.get("delivery") or {}).get("status"),
                          secs=round(now - r["firstSeen"]), created=j.get("createdAt"))
             self.rec["jobs"] = seen
@@ -279,7 +280,12 @@ def run_direct(cl, s, teacher, stamp, job_limit):
         jobs = r.watch_jobs(s["direct"], job_limit)
         expect = s.get("expect", "ok")
         for jid, j in jobs.items():
-            j["resumed"] = any("resuming" in a for a in j.get("activity", []))
+            # Resumed = the durable attempt counter went past 1 (or the
+            # honest error counts several stops). The "resuming" activity
+            # line alone is not enough: a 10 s poll can miss it, because the
+            # fresh attempt overwrites it at once with its own activity.
+            m = re.search(r"time limit (\d+) times", j.get("error") or "")
+            j["resumed"] = (j.get("attempts") or 0) > 1 or bool(m and int(m.group(1)) > 1) or any("resuming" in a for a in j.get("activity", []))
             if j.get("restarted") and not j["resumed"]:
                 r.fail("job-duplicate", f"{jid}: step counter went backwards {j['steps']} without a resume")
             if j.get("status") == "running":
