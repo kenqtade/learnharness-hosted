@@ -397,6 +397,7 @@ export function routeAccess(method: string, pathname: string): Access {
 	if (p === "/api/internal/run") return "public";
 	if (p === "/api/update") return method.toUpperCase() === "GET" ? "user" : "owner";
 	if (p.startsWith("/api/admin")) return "owner";
+	if (p.startsWith("/api/eval/")) return "owner";
 	if (p.startsWith("/api/subscriptions") || p === "/api/claude-code") return "owner";
 	return "user";
 }

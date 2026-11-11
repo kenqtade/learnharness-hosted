@@ -1,0 +1,26 @@
+{
+ "meta": {
+  "when": "20261110-204423",
+  "url": "https://learnharness-gamma.vercel.app",
+  "teacher": ""
+ },
+ "results": [
+  {
+   "scenario": "turn",
+   "teacher": "(configured)",
+   "turns": [
+    {
+     "label": "opening",
+     "http": 200,
+     "startSecs": 0.4,
+     "secs": 394.2
+    }
+   ],
+   "jobs": {},
+   "outcome": "turn-lost",
+   "detail": "opening: no reply was ever saved (394.2s) \u2014 the turn died mid-run",
+   "secs": 395,
+   "toolCalls": []
+  }
+ ]
+}

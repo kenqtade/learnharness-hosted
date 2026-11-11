@@ -158,6 +158,34 @@ export function markTurnOutOfTime<T>(messages: readonly T[], baseCount: number, 
 	return out;
 }
 
+/** EVAL HOOKS (reliability wave, 2026-11) — staging only. With
+ *  LH_EVAL_HOOKS=1 the owner may spawn a sub-agent job straight into a chat
+ *  (POST /api/eval/job), so evals/agent-reliability can measure the real job
+ *  machinery on the host (dispatch, lease, deadline + resume, delivery)
+ *  without depending on a model choosing to call the tool. An optional
+ *  per-job budget forces the out-of-time path. Off everywhere else. */
+export const evalHooksEnabled = (): boolean => process.env.LH_EVAL_HOOKS === "1";
+
+function evalBudgetOverride(job: { input?: unknown }): number | undefined {
+	if (!evalHooksEnabled()) return undefined;
+	const raw = (job.input as { evalBudgetMs?: unknown } | undefined)?.evalBudgetMs;
+	return typeof raw === "number" && raw > 0 ? raw : undefined;
+}
+
+export function spawnEvalJob(chatId: string, kind: "visual" | "demo", brief: string, title?: string, evalBudgetMs?: number): { status: number; body: Record<string, unknown> } {
+	if (!evalHooksEnabled()) return { status: 404, body: { error: "not found" } };
+	if (!stores.chatStore.getChat(chatId)) return { status: 404, body: { error: "chat not found" } };
+	if (!brief.trim()) return { status: 400, body: { error: "brief required" } };
+	const input = {
+		brief,
+		...(kind === "demo" ? { title: title?.trim() || "Interactive demo" } : {}),
+		...(evalBudgetMs && evalBudgetMs > 0 ? { evalBudgetMs } : {}),
+	};
+	const job = stores.jobStore.createJob({ kind, chatId, toolCallId: `eval_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, input });
+	startJob(job.id, input as never);
+	return { status: 202, body: { jobId: job.id } };
+}
+
 /** Start a job's worker: in its OWN invocation when the host has a wall
  *  (internal dispatch), else — or when the dispatch fails — in-process. */
 function startJob(jobId: string, input?: Parameters<typeof jobRunner.runJob>[1]): void {
@@ -188,8 +216,8 @@ const jobRunner = createJobRunner({
 	// What is left of the job budget in THIS invocation: a dispatched job
 	// starts a fresh one (≈ the whole budget); the in-process fallback gets
 	// only what the triggering request left.
-	budgetMs: () => {
-		const budget = jobBudgetMs();
+	budgetMs: (job) => {
+		const budget = evalBudgetOverride(job) ?? jobBudgetMs();
 		return budget ? remainingInvocationBudget(budget, Date.now(), 5_000) : undefined;
 	},
 	redispatch: (jobId) => startJob(jobId),

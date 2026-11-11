@@ -25,6 +25,8 @@ Outcome categories (one per run; see README.md):
   not-delivered      the job finished but its result never reached the lesson
   extraction-missing background graph extraction produced nothing for the lesson
   probe-not-finished the prober kept asking and never handed off to the teacher (model behaviour)
+  job-wrong-outcome  (forced deadline) the job did not end with the honest out-of-time error
+  job-not-resumed    (forced deadline) the job ran out of time but was never resumed in a fresh run
 """
 import argparse, json, os, re, sys, time, urllib.error, urllib.request
 
@@ -244,7 +246,62 @@ class Run:
         self.cl.req("DELETE", f"/api/chats/{self.cid}?mode=delete-nodes")
 
 
+def run_direct(cl, s, teacher, stamp, job_limit):
+    """DIRECT JOB scenarios (staging eval hook, LH_EVAL_HOOKS=1): spawn the
+    sub-agent job straight into a fresh chat via POST /api/eval/job and
+    measure the job machinery itself (dispatch to its own invocation, lease,
+    deadline + resume, delivery), independent of whether a model chooses to
+    call the tool. `expect: "out-of-time"` forces a tiny per-job budget and
+    passes only if every attempt is stopped, resumed, and the job ends with
+    the HONEST out-of-time error delivered to the lesson (no silent kill)."""
+    r = Run(cl, s, teacher, stamp)
+    t0 = time.time()
+    try:
+        body = {"chatId": r.cid, "kind": s["direct"], "brief": s["brief"]}
+        if s.get("title"):
+            body["title"] = s["title"]
+        if s.get("evalBudgetMs"):
+            body["evalBudgetMs"] = s["evalBudgetMs"]
+        code, d, _ = cl.req("POST", "/api/eval/job", body)
+        r.rec["spawn"] = code
+        if code != 202:
+            r.fail("harness-error", f"eval hook refused: HTTP {code} {str(d)[:200]} (is LH_EVAL_HOOKS=1 set?)")
+            return r.rec
+        jobs = r.watch_jobs(s["direct"], job_limit)
+        expect = s.get("expect", "ok")
+        for jid, j in jobs.items():
+            j["resumed"] = any("resuming" in a for a in j.get("activity", []))
+            if j.get("restarted") and not j["resumed"]:
+                r.fail("job-duplicate", f"{jid}: step counter went backwards {j['steps']} without a resume")
+            if j.get("status") == "running":
+                if j["maxStall"] > FUNCTION_LIMIT_S:
+                    r.fail("job-stuck", f"{jid}: running with no progress for {j['maxStall']}s (activity {j['activity'][-2:]})")
+                else:
+                    r.fail("job-timeout", f"{jid}: still running after {j['secs']}s")
+            elif expect == "out-of-time":
+                if j.get("status") != "error" or "ran out of time" not in (j.get("error") or ""):
+                    r.fail("job-wrong-outcome", f"{jid}: expected the honest out-of-time error, got {j.get('status')}: {j.get('error')}")
+                elif not j["resumed"]:
+                    r.fail("job-not-resumed", f"{jid}: out of time but never resumed in a fresh run (activity {j['activity']})")
+            elif j.get("status") == "error":
+                r.fail("job-error", f"{jid}: {j.get('error')}")
+        if r.rec["outcome"]:
+            return r.rec
+        if not r.delivered(FUNCTION_LIMIT_S + 120):
+            r.fail("not-delivered", "job finished but its result never reached the lesson")
+            return r.rec
+        r.rec["outcome"] = "ok"
+    except Exception as e:  # noqa: BLE001
+        r.fail("harness-error", f"{type(e).__name__}: {e}")
+    finally:
+        r.rec["secs"] = round(time.time() - t0)
+        r.cleanup()
+    return r.rec
+
+
 def run_scenario(cl, s, teacher, stamp, job_limit):
+    if s.get("direct"):
+        return run_direct(cl, s, teacher, stamp, job_limit)
     r = Run(cl, s, teacher, stamp)
     t0 = time.time()
     try:

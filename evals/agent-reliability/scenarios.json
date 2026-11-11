@@ -30,5 +30,27 @@
 		"answerRounds": 4,
 		"extraction": true,
 		"extractionLimit": 480
+	},
+	{
+		"id": "visual-direct",
+		"what": "Visual sub-agent job spawned directly (eval hook): its own invocation must finish it and deliver it to the lesson.",
+		"direct": "visual",
+		"brief": "A labelled diagram of the four chambers of the human heart (right atrium, right ventricle, left atrium, left ventricle) with arrows showing blood flow through them, the lungs and the body."
+	},
+	{
+		"id": "demo-direct",
+		"what": "Demo sub-agent job spawned directly (eval hook): the longest loop (up to 24 model calls with self-testing).",
+		"direct": "demo",
+		"title": "Pendulum lab",
+		"brief": "An interactive pendulum: sliders for length (0.2–3 m) and gravity (1–25 m/s²), an animated swinging bob, and a live readout of the period T = 2π√(L/g)."
+	},
+	{
+		"id": "demo-deadline",
+		"what": "Forced deadline (eval hook, 20 s budget per attempt): every attempt is stopped before the wall, resumed in a fresh invocation, and the job ends with the honest out-of-time error delivered — never a silent kill.",
+		"direct": "demo",
+		"title": "Pendulum lab",
+		"brief": "An interactive pendulum: sliders for length and gravity, an animated bob and a live period readout.",
+		"evalBudgetMs": 20000,
+		"expect": "out-of-time"
 	}
 ]

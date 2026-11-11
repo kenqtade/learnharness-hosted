@@ -1,0 +1,45 @@
+{
+ "meta": {
+  "when": "20261110-205117",
+  "url": "https://learnharness-multiuser.vercel.app",
+  "teacher": "nvidia/deepseek-ai/deepseek-v4.1-flash"
+ },
+ "results": [
+  {
+   "scenario": "turn",
+   "teacher": "nvidia/deepseek-ai/deepseek-v4.1-flash",
+   "turns": [
+    {
+     "label": "opening",
+     "http": 200,
+     "startSecs": 0.3,
+     "secs": 131.8,
+     "error": "Request timed out."
+    }
+   ],
+   "jobs": {},
+   "outcome": "turn-error",
+   "detail": "opening: Request timed out. (after 131.8s)",
+   "secs": 132,
+   "toolCalls": []
+  },
+  {
+   "scenario": "turn",
+   "teacher": "nvidia/deepseek-ai/deepseek-v4.1-flash",
+   "turns": [
+    {
+     "label": "opening",
+     "http": 200,
+     "startSecs": 0.3,
+     "secs": 135.9,
+     "error": "Request timed out."
+    }
+   ],
+   "jobs": {},
+   "outcome": "turn-error",
+   "detail": "opening: Request timed out. (after 135.9s)",
+   "secs": 136,
+   "toolCalls": []
+  }
+ ]
+}

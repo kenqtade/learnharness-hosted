@@ -26,7 +26,8 @@ import { createJobRunner, jobLeaseTuning, leaseHeldElsewhere, outOfTimeReason, r
 import { isJobLive, unregisterJobAbort } from "../src/agent/subagents/aborts.ts";
 import { recoverStaleJobs, setJobRespawn } from "../src/server/jobs.ts";
 import { dispatchTarget, signEnvelope, verifyEnvelope } from "../src/server/internal-dispatch.ts";
-import { handleChatRequest, jobBudgetMs, markTurnOutOfTime, outOfTimeTurnText, turnBudgetMs } from "../src/server/chat-handler.ts";
+import { handleChatRequest, jobBudgetMs, markTurnOutOfTime, outOfTimeTurnText, spawnEvalJob, turnBudgetMs } from "../src/server/chat-handler.ts";
+import { routeAccess } from "../src/server/accounts.ts";
 import { runningTurn } from "../src/server/turn-runs.ts";
 import { invocationStartedAt, remainingInvocationBudget, runWithInvocationClock } from "../src/server/invocation-clock.ts";
 import { createTeacherAgent } from "../src/agent/teacher-agent.ts";
@@ -278,6 +279,21 @@ describe("turn deadline", () => {
 			// Background work started inside inherits the clock.
 			await new Promise<void>((resolve) => setTimeout(() => { assert.equal(invocationStartedAt(), start); resolve(); }, 5));
 		}, start);
+	});
+
+	it("eval hook: off unless LH_EVAL_HOOKS=1, owner-only, validates its input", () => {
+		const saved = process.env.LH_EVAL_HOOKS;
+		try {
+			delete process.env.LH_EVAL_HOOKS;
+			assert.equal(spawnEvalJob("chat_x", "demo", "b").status, 404, "off by default (prod)");
+			assert.equal(routeAccess("POST", "/api/eval/job"), "owner");
+			process.env.LH_EVAL_HOOKS = "1";
+			assert.equal(spawnEvalJob("chat_missing", "demo", "b").status, 404, "unknown chat");
+			const chat = chatStore.createChat("eval hook");
+			assert.equal(spawnEvalJob(chat.id, "visual", "  ").status, 400, "brief required");
+		} finally {
+			if (saved === undefined) delete process.env.LH_EVAL_HOOKS; else process.env.LH_EVAL_HOOKS = saved;
+		}
 	});
 
 	it("budgets: Vercel defaults, env overrides, none locally", () => {

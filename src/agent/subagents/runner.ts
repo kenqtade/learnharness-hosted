@@ -99,7 +99,7 @@ export interface JobRunnerDeps {
 	 *  budget, hands the job back (lease released) and asks `redispatch` for
 	 *  a fresh run — instead of being killed mid-write with no trace.
 	 *  undefined = no budget (local server / desktop / tests). Read per run. */
-	budgetMs?: () => number | undefined;
+	budgetMs?: (job: JobRecord) => number | undefined;
 	/** Start a released job again in a FRESH function invocation (its own
 	 *  time budget). Absent → the next recovery sweep re-runs it. */
 	redispatch?: (jobId: string) => void;
@@ -358,7 +358,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			}
 			jobStore.updateJob(jobId, { lease: { owner, until: Date.now() + jobLeaseTuning.ttlMs } });
 		}, jobLeaseTuning.renewMs);
-		const budget = deps.budgetMs?.();
+		const budget = deps.budgetMs?.(job);
 		const deadline = budget && budget > 0
 			? setTimeout(() => {
 				if (!stillRunning(jobId)) return;
