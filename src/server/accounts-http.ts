@@ -9,6 +9,7 @@
  * 404, so the single-user app grows no new surface.
  */
 import { multiUser } from "../store/user-scope.ts";
+import { hostedFileAccess } from "./hosted-files.ts";
 import {
 	changePassword, clearSessionCookie, createCustomInvite, createInvite, deleteAccount, issueSession, listAccounts, listInvites,
 	login, platformState, publicAccount, revokeInvite, sessionCookie, setDisabled, setOpenSignups, signOutEverywhere,
@@ -44,9 +45,9 @@ const signedIn = (req: Request, account: Account, extra: Record<string, unknown>
 
 /** GET /api/auth/me: what the UI needs to pick its shell. */
 export function authMeResponse(req: Request): Response {
-	if (!multiUser) return ok({ multiUser: false });
+	if (!multiUser) return ok({ multiUser: false, uploads: hostedFileAccess() });
 	const session = actor(req);
-	return ok({ multiUser: true, user: session ? publicAccount(session.account) : null, platform: platformState() });
+	return ok({ multiUser: true, uploads: hostedFileAccess(), user: session ? publicAccount(session.account) : null, platform: platformState() });
 }
 
 export async function authLoginResponse(req: Request): Promise<Response> {

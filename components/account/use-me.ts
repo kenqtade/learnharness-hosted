@@ -19,6 +19,8 @@ export interface MeUser {
 }
 export interface Me {
 	multiUser: boolean;
+	/** HOSTED FORK: browser uploads are offered (the paperclip is active). */
+	uploads: boolean;
 	user?: MeUser | null;
 	platform?: { ownerExists: boolean; openSignups: boolean; setupConfigured: boolean };
 }
@@ -28,8 +30,8 @@ let cached: Promise<Me> | null = null;
 export function fetchMe(fresh = false): Promise<Me> {
 	if (!cached || fresh) {
 		cached = fetch("/api/auth/me", { cache: "no-store" })
-			.then((r) => (r.ok ? (r.json() as Promise<Me>) : { multiUser: false }))
-			.catch(() => ({ multiUser: false }));
+			.then((r) => (r.ok ? (r.json() as Promise<Me>) : { multiUser: false, uploads: false }))
+			.catch(() => ({ multiUser: false, uploads: false }));
 	}
 	return cached;
 }
