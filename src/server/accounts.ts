@@ -24,6 +24,7 @@ import path from "node:path";
 import vfs, { PLATFORM_ROOT } from "../store/vfs.ts";
 import { PATHS } from "../../config.ts";
 import { runAsUser, type Role, type ScopeUser } from "../store/user-scope.ts";
+import { deleteAccountUploads } from "./uploads.ts";
 
 const USERS_FILE = path.join(PLATFORM_ROOT, "users.json");
 const INVITES_FILE = path.join(PLATFORM_ROOT, "invites.json");
@@ -275,7 +276,12 @@ export function deleteAccount(id: string): Result<PublicAccount> {
 	const account = users.find((u) => u.id === id);
 	if (!account) return fail("Account not found.", 404);
 	if (account.role === "owner") return fail("The owner account cannot be deleted.", 400);
-	runAsUser({ id: account.id, role: "member" }, () => vfs.rmSync(PATHS.data, { recursive: true, force: true }));
+	runAsUser({ id: account.id, role: "member" }, () => {
+		// HOSTED FORK: delete the user's blobs (best effort) and their
+		// materialized uploads folder before the data space disappears.
+		void deleteAccountUploads().catch((error: unknown) => console.error("[uploads] account upload cleanup failed:", error));
+		vfs.rmSync(PATHS.data, { recursive: true, force: true });
+	});
 	writeUsers(users.filter((u) => u.id !== id));
 	return { ok: true, value: publicAccount(account) };
 }
