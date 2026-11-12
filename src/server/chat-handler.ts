@@ -41,6 +41,8 @@ import { durableRuntime, durableRuntimeSelected, setDurableRecoverer } from "./d
 import { startDurableTurn, type DurableAgentKind, type DurableTurnPlan } from "./durable/turn.ts";
 import { setFileAccessPolicy } from "../agent/tools/file-access.ts";
 import { fileAccessPolicy } from "./file-access.ts";
+import { hostedFileAccess } from "./hosted-files.ts";
+import { materializeUploads } from "./uploads.ts";
 import { collectToolCallIds } from "./pi/call-ids.ts";
 import { providerEventNote } from "../agent/provider-events.ts";
 import { effectiveSettings, stores } from "./stores.ts";
@@ -362,7 +364,9 @@ export async function runInternalTask(body: string, signature: string | null): P
 	if (envelope.user?.role === "member" && !getAccount(envelope.user.id)) return { status: 410, body: { error: "unknown user" } };
 	await syncStoreNow(true);
 	const { task } = envelope;
-	const work = (): Promise<unknown> => {
+	const work = async (): Promise<unknown> => {
+		// HOSTED FORK: the confined file tools see this user's uploads folder.
+		if (hostedFileAccess()) await materializeUploads().catch((error: unknown) => console.error("[uploads] materialization failed before the internal task:", error));
 		if (task.kind === "job") {
 			return (async () => {
 				// The dispatcher flushed before sending; still, a lagging read
@@ -600,6 +604,9 @@ export async function handleChatInput(
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
 	sideContext: Pick<SideChatService, "snapshot"> = sideChats,
 ): Promise<Response> {
+	// HOSTED FORK: make the learner's uploaded files visible to the confined
+	// file tools before this turn starts. Logged, never fatal.
+	if (hostedFileAccess()) await materializeUploads().catch((error: unknown) => console.error("[uploads] materialization failed before the turn:", error));
 	// DURABLE-PI BRANCH: a turn resumed from a crash must hold this chat's
 	// lock before a new one can take it (no-op on the default runtime).
 	await ensureDurableRecovered();
