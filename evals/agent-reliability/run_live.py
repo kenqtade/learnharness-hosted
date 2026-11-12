@@ -253,6 +253,11 @@ class Run:
         return False
 
     def cleanup(self):
+        # Failed runs keep their chat for diagnosis (delete it by hand later).
+        if self.rec.get("outcome") not in (None, "ok"):
+            self.rec["keptChat"] = self.cid
+            print(f"  (kept failed chat {self.cid} for diagnosis)")
+            return
         self.cl.req("DELETE", f"/api/chats/{self.cid}?mode=delete-nodes")
 
 
