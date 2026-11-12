@@ -1,0 +1,192 @@
+# HOSTED FORK — keep the hosted LearnHarness up to date WITHOUT ever breaking it.
+#
+# Daily (and on demand):
+#   1. merge     the latest upstream release into the `hosted` line on a branch
+#                (update/vX.Y.Z). A conflict opens an issue and stops; prod is untouched.
+#   2. verify    install, type-check, the hosted-fork invariant gates, and the upstream
+#                tests the release changed.
+#   3. staging   deploy that commit to staging and smoke-test it live (sign-in gate,
+#                storage round-trip, core API). The checks are model-independent: no
+#                provider key is spent.
+#   4. prod      take an encrypted backup of the prod data, deploy the same commit, and
+#                smoke-test it. On failure, redeploy the last good `hosted` commit (rollback).
+#   5. promote   fast-forward `hosted` to the verified commit.
+#
+# New upstream features that don't fit hosting stay OFF on hosted (plugins need
+# LH_PLUGINS=1; learner file tools are confined to uploads), so a feature can't block
+# an update. Free: GitHub Actions on a public repo, Vercel Hobby, Convex free.
+name: hosted-update
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # daily, 03:17 UTC
+  workflow_dispatch:
+    inputs:
+      redeploy:
+        description: "Deploy the current hosted branch even when no upstream release is new"
+        type: boolean
+        default: false
+
+concurrency:
+  group: hosted-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  NODE_VERSION: "22"
+  NEXT_TELEMETRY_DISABLED: "1"
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+  PUPPETEER_SKIP_DOWNLOAD: "1"
+
+jobs:
+  merge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      branch: ${{ steps.merge.outputs.branch }}
+      tag: ${{ steps.merge.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hosted
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Merge the latest upstream release
+        id: merge
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "hosted-update[bot]"
+          git config user.email "hosted-update@users.noreply.github.com"
+          set +e; node scripts/upstream-merge.mjs; status=$?; set -e
+          tag=$(node -p "require('./upstream.json').base")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ $status -eq 10 ]; then
+            echo "No newer upstream release (base $tag)."
+            echo "changed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ $status -ne 0 ]; then
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Upstream merge needs a human (exit $status). Prod is untouched."
+            exit 1
+          fi
+          branch="update/$tag"
+          git checkout -B "$branch"
+          rm -f .lock-regenerated
+          git add -A
+          git commit -qm "merge upstream $tag into the hosted line (hosted-update)"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Install
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          npm ci --include=dev --no-audit --no-fund || npm install --include=dev --no-audit --no-fund
+          npm run plugins:setup
+      - name: Type-check
+        if: steps.merge.outputs.changed == 'true'
+        run: NODE_OPTIONS=--max-old-space-size=6144 npx tsc --noEmit
+      - name: Hosted-fork invariant gates
+        if: steps.merge.outputs.changed == 'true'
+        run: NODE_ENV=test npx tsx --test tests/storage-seam.test.ts tests/hosted-invariants.test.ts tests/hosted-file-access.test.ts tests/job-reliability.test.ts tests/hosted-request-limits.test.ts
+      - name: Upstream tests the release changed
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          files=$(git diff --name-only HEAD~1 -- 'tests/*.test.ts' 'tests/*.test.tsx' | while read -r f; do [ -f "$f" ] && echo "$f"; done)
+          if [ -z "$files" ]; then echo "No test files changed."; exit 0; fi
+          echo "$files"
+          NODE_ENV=test npx tsx --test $files
+      - name: Push the verified update branch
+        if: steps.merge.outputs.changed == 'true'
+        run: git push -f origin "${{ steps.merge.outputs.branch }}"
+      - name: Report a merge that needs a human
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ steps.merge.outputs.tag }}' || 'latest';
+            const title = `Upstream update needs attention (${tag})`;
+            const body = `The daily hosted update stopped before deploying anything — **production is untouched**.\n\nRun: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nMerge the release by hand on a branch, push it, then run **hosted-update** with "redeploy".`;
+            const open = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: 'hosted-update' });
+            if (!open.data.some((i) => i.title === title)) {
+              await github.rest.issues.create({ ...context.repo, title, body, labels: ['hosted-update'] });
+            }
+
+  deploy:
+    needs: merge
+    if: needs.merge.outputs.changed == 'true' || inputs.redeploy == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: production
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID_STAGING: ${{ secrets.VERCEL_PROJECT_ID_STAGING }}
+      VERCEL_PROJECT_ID_PRODUCTION: ${{ secrets.VERCEL_PROJECT_ID_PRODUCTION }}
+      CONVEX_DEPLOY_KEY_STAGING: ${{ secrets.CONVEX_DEPLOY_KEY_STAGING }}
+      CONVEX_DEPLOY_KEY_PRODUCTION: ${{ secrets.CONVEX_DEPLOY_KEY_PRODUCTION }}
+      STAGING_URL: ${{ secrets.STAGING_URL }}
+      PRODUCTION_URL: ${{ secrets.PRODUCTION_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.merge.outputs.branch || 'hosted' }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Deploy to staging
+        run: bash scripts/ci/deploy.sh staging
+      - name: Smoke-test staging
+        env:
+          SMOKE_URL: ${{ secrets.STAGING_URL }}
+          SMOKE_USER: ${{ secrets.STAGING_OWNER_USER || 'owner' }}
+          SMOKE_PASSWORD: ${{ secrets.STAGING_OWNER_PASSWORD }}
+        run: python3 scripts/ci/smoke.py
+      - name: Back up production data (encrypted)
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY_PRODUCTION }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          npx --yes convex export --path prod-backup.zip
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:BACKUP_PASSPHRASE -in prod-backup.zip -out prod-backup.zip.enc
+          rm -f prod-backup.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prod-backup-${{ github.run_id }}
+          path: prod-backup.zip.enc
+          retention-days: 14
+      - name: Deploy to production
+        id: prod
+        run: bash scripts/ci/deploy.sh production
+      - name: Smoke-test production
+        id: smoke
+        env:
+          SMOKE_URL: ${{ secrets.PRODUCTION_URL }}
+          SMOKE_USER: ${{ secrets.PRODUCTION_OWNER_USER || 'owner' }}
+          SMOKE_PASSWORD: ${{ secrets.PRODUCTION_OWNER_PASSWORD }}
+        run: python3 scripts/ci/smoke.py
+      - name: Roll back production to the last good hosted commit
+        if: failure() && steps.prod.outcome != 'skipped' && needs.merge.outputs.branch != ''
+        run: |
+          git checkout -q origin/hosted
+          bash scripts/ci/deploy.sh production || echo "::error::Rollback deploy failed — restore by hand"
+      - name: Promote — fast-forward hosted to the verified commit
+        if: success() && needs.merge.outputs.branch != ''
+        run: |
+          git push origin "HEAD:refs/heads/hosted"
+          git push origin --delete "${{ needs.merge.outputs.branch }}" || true
+      - name: Report a failed deploy
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Hosted deploy failed (${{ needs.merge.outputs.tag || 'redeploy' }})`;
+            const body = `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nStaging/prod smoke or deploy failed. Production was rolled back to the last good \`hosted\` commit if it had been touched. The encrypted data backup is attached to the run.`;
+            await github.rest.issues.create({ ...context.repo, title, body, labels: ['hosted-update'] });
