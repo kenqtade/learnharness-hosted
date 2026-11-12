@@ -106,7 +106,7 @@ function readSteps(file: string): FauxResponseStep[] {
 	];
 }
 
-function fakeHeadless(rendered: Buffer | ((page: number) => Buffer)) {
+function fakeHeadless(rendered: Buffer | ((page: number) => Buffer), svgRender?: (call: number) => Buffer) {
 	const svgCalls: string[] = [];
 	const pdfCalls: number[][] = [];
 	const headless: HeadlessApi = {
@@ -115,6 +115,7 @@ function fakeHeadless(rendered: Buffer | ((page: number) => Buffer)) {
 		runDemo: async () => { throw new Error("unexpected browser execution"); },
 		renderSvg: async (svg) => {
 			svgCalls.push(svg);
+			if (svgRender) return svgRender(svgCalls.length);
 			return typeof rendered === "function" ? rendered(1) : rendered;
 		},
 		renderPdfPages: async (_file, pages) => {
@@ -295,7 +296,9 @@ for (const [label, resize, expected] of [
 	for (const forced of [false, true]) {
 		test(`visual maker ${forced ? "forced-final" : "explicit render_svg"} path processes images using ${label}`, async () => {
 			const bytes = png(4800, 120);
-			const { headless, svgCalls } = fakeHeadless(bytes);
+			// The forced-final path needs a FAILED auto-render: the write's own
+			// render fails, so the maker's finish gate renders the draft itself.
+			const { headless, svgCalls } = fakeHeadless(bytes, forced ? (call) => (call === 1 ? Buffer.from("corrupt render") : bytes) : undefined);
 			const steps: FauxResponseStep[] = forced ? [
 				fauxAssistantMessage([fauxToolCall("write_svg", { svg: SVG }, { id: "write-1" })], { stopReason: "toolUse" }),
 				fauxAssistantMessage([fauxText("Premature notes without inspection.")]),
@@ -310,13 +313,13 @@ for (const [label, resize, expected] of [
 			const { engine, requests } = scripted(steps, resize);
 			const result = await runVisualMaker({ brief: "One precise synthetic figure." }, { engine, headless });
 			assert.equal(requests.length, forced ? 3 : 2);
-			assert.deepEqual(svgCalls, [SVG]);
+			assert.deepEqual(svgCalls, forced ? [SVG, SVG] : [SVG]);
 			assertProcessedImage(requests.at(-1)!, expected, bytes);
 			assert.equal(result.svg, SVG);
 			assert.match(result.notes!, /^Confirmed after inspecting/);
 			assert.equal(requests.at(-1)!.messages.at(-1)!.role, "user");
 			if (forced) {
-				assert.deepEqual(images(requests[1]!), [], "premature finish did not see an image yet");
+				assert.deepEqual(images(requests[1]!), [], "the failed auto-render showed no image");
 				assert.match(text(requests[2]!), /You finished without looking at a render of your final SVG/);
 			} else {
 				assert.match(text(requests[1]!), /Here is the current render of your SVG/);
@@ -345,7 +348,7 @@ for (const forced of [false, true]) {
 		assert.match(result.notes!, /^FAILED: inspecting the final SVG failed/);
 		assert.match(result.notes!, /Image omitted:/);
 		assert.ok(!activity.some((line) => line.includes("inspecting")), "a failed image is never marked inspected");
-		assert.equal(svgCalls.length, forced ? 1 : 2, "an explicit processing failure leaves the final-SVG gate unsatisfied");
+		assert.equal(svgCalls.length, forced ? 2 : 3, "an explicit processing failure leaves the final-SVG gate unsatisfied");
 		if (!forced) assert.match(text(requests[1]!), /RENDER ERROR.*Image omitted:/);
 	});
 }

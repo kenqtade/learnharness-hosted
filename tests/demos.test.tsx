@@ -830,7 +830,7 @@ describe("visual maker (fake model + fake headless)", () => {
 	});
 
 	it("refuses an unverified final SVG when its final render throws", async () => {
-		const headless = fakeHeadless({ renderFailures: 1 });
+		const headless = fakeHeadless({ renderFailures: 2 });
 		const model = scriptedModel([
 			{ toolCalls: [{ toolCallId: "w1", toolName: "write_svg", input: { svg: SVG_1 } }] },
 			{ text: "Done without looking." },
@@ -838,7 +838,7 @@ describe("visual maker (fake model + fake headless)", () => {
 		const result = await runVisualMaker({ brief: "b" }, { engine: model, headless });
 		assert.equal(result.svg, "");
 		assert.match(result.notes ?? "", /^FAILED: rendering the final SVG failed — XML parse error/);
-		assert.equal(headless.svgRenders.length, 1);
+		assert.equal(headless.svgRenders.length, 2, "the auto-render and the final render both failed");
 	});
 
 	it("write → render → look → finish delivers the svg with notes", async () => {
@@ -858,16 +858,16 @@ describe("visual maker (fake model + fake headless)", () => {
 	});
 
 	it("forces a look when the model finishes without rendering the final svg", async () => {
-		const headless = fakeHeadless();
+		const headless = fakeHeadless({ renderFailures: 1 });
 		const model = scriptedModel([
 			{ toolCalls: [{ toolCallId: "w1", toolName: "write_svg", input: { svg: SVG_1 } }] },
-			{ text: "Done." }, // premature finish — no render yet
+			{ text: "Done." }, // premature finish — the auto-render failed
 			{ text: "Looked at it — correct." }, // after the forced look
 		]);
 		const result = await runVisualMaker({ brief: "b" }, { engine: model, headless });
 		assert.equal(result.svg, SVG_1, "delivered after the forced look");
 		assert.equal(result.notes, "Looked at it — correct.");
-		assert.equal(headless.svgRenders.length, 1, "the gate rendered the svg once itself");
+		assert.equal(headless.svgRenders.length, 2, "the gate rendered the svg once itself");
 	});
 
 	it("edit_svg: exact-match single replacement, with fuzzy context on a miss", async () => {
@@ -994,7 +994,7 @@ describe("visual maker (fake model + fake headless)", () => {
 	});
 
 	it("never delivers an unrendered draft: a written-but-unrendered svg still FAILS on a model-connection error", async () => {
-		const headless = fakeHeadless();
+		const headless = fakeHeadless({ renderFailures: 1 });
 		const model = rawModel([
 			fauxAssistantMessage([fauxToolCall("write_svg", { svg: SVG_1 }, { id: "w1" })], { stopReason: "toolUse" }),
 			providerError("Request timed out"),
@@ -1002,7 +1002,7 @@ describe("visual maker (fake model + fake headless)", () => {
 		const result = await runVisualMaker({ brief: "b" }, { engine: model, headless });
 		assert.equal(result.svg, "");
 		assert.match(result.notes ?? "", /^FAILED: the maker crashed — Request timed out/);
-		assert.equal(headless.svgRenders.length, 0, "the unrendered draft is never delivered");
+		assert.equal(headless.svgRenders.length, 1, "the only render was the failed auto-render");
 	});
 
 	it("an aborted run (hosting deadline) still FAILS even with a rendered draft", async () => {
@@ -1022,6 +1022,70 @@ describe("visual maker (fake model + fake headless)", () => {
 		);
 		assert.equal(result.svg, "", "an abort is the hosting deadline, not a salvageable crash");
 		assert.match(result.notes ?? "", /^FAILED: the maker crashed/);
+	});
+
+	// The auto-render (2026-11): write_svg renders its own draft, so ONE
+	// model call per write — a slow reasoning provider no longer spends a
+	// second call on render_svg (and often never reached it at all).
+	it("write_svg alone (no render_svg) then the iteration limit delivers the RENDERED draft", async () => {
+		const headless = fakeHeadless();
+		const model = scriptedModel([
+			{ toolCalls: [{ toolCallId: "w1", toolName: "write_svg", input: { svg: SVG_1 } }] },
+			{ toolCalls: [{ toolCallId: "w2", toolName: "write_svg", input: { svg: SVG_1 } }] },
+		]);
+		const result = await runVisualMaker({ brief: "b" }, { engine: model, headless, maxIterations: 2 });
+		assert.equal(result.svg, SVG_1, "the auto-render made the draft verified");
+		assert.match(result.notes ?? "", /Iteration limit reached/);
+		assert.equal(headless.svgRenders.length, 1, "the same svg is not rastered twice");
+	});
+
+	it("write_svg alone then a provider error delivers the RENDERED draft", async () => {
+		const headless = fakeHeadless();
+		const model = rawModel([
+			fauxAssistantMessage([fauxToolCall("write_svg", { svg: SVG_1 }, { id: "w1" })], { stopReason: "toolUse" }),
+			providerError("Request timed out"),
+		]);
+		const result = await runVisualMaker({ brief: "b" }, { engine: model, headless });
+		assert.equal(result.svg, SVG_1, "the auto-render made the draft verified — it is delivered");
+		assert.match(
+			result.notes ?? "",
+			/^Delivered the last rendered draft: the model connection failed \(Request timed out\)/,
+		);
+		assert.equal(headless.svgRenders.length, 1, "the draft was rendered exactly once");
+	});
+
+	it("an auto-render error is NOT a rendered draft: it is never verified and never delivered", async () => {
+		const headless = fakeHeadless({ renderFailures: 3 });
+		const seen: Array<{ draft: string; verified: boolean }> = [];
+		const model = scriptedModel([
+			{ toolCalls: [{ toolCallId: "w1", toolName: "write_svg", input: { svg: SVG_1 } }] },
+			{ toolCalls: [{ toolCallId: "r1", toolName: "render_svg", input: {} }] },
+			{ text: "Done." },
+		]);
+		const result = await runVisualMaker(
+			{ brief: "b" },
+			{ engine: model, headless, onCheckpoint: (draft, verified) => seen.push({ draft, verified }) },
+		);
+		assert.equal(result.svg, "", "an unrendered draft is never delivered");
+		assert.deepEqual(seen, [{ draft: SVG_1, verified: false }], "the failed render never verified the draft");
+		assert.match(result.notes ?? "", /^FAILED: rendering the final SVG failed/);
+	});
+
+	it("the model sees the auto-render in the NEXT message — one model call per write", async () => {
+		const headless = fakeHeadless();
+		const prompts: string[] = [];
+		const model = scriptedModel(
+			[
+				{ toolCalls: [{ toolCallId: "w1", toolName: "write_svg", input: { svg: SVG_1 } }] },
+				{ text: "The number line is correct." },
+			],
+			(ctx) => prompts.push(JSON.stringify(ctx.messages)),
+		);
+		const result = await runVisualMaker({ brief: "b" }, { engine: model, headless });
+		assert.equal(result.svg, SVG_1);
+		assert.equal(result.notes, "The number line is correct.");
+		assert.equal(prompts.length, 2, "the write and the finish cost two calls, not three");
+		assert.match(prompts[1]!, /Here is the current render of your SVG/, "the render rides the next model message");
 	});
 });
 

@@ -291,7 +291,7 @@ const jobRunner = createJobRunner({
 	// between dispatch and spawn lands); an empty chain flows through as
 	// undefined and the runner refuses the spawn honestly.
 	engineFor: (role) =>
-		resolveEngine(role),
+		resolveJobEngine(role),
 	// Key-presence gate (provider-key interlude, 2026-09-25): the runner
 	// reads the resolved engine's provider and asks THIS check (the agent
 	// layer may not read the key store); a missing key refuses the spawn
@@ -341,6 +341,16 @@ setTurnRunner(async (chatId, input) => {
 function resolveEngine(role: ModelRole): PiEngine | undefined {
 	const spec = resolveRoleSpec(role, stores.settingsStore.readSettings());
 	return spec ? piEngineForSpec(spec, true, undefined, retentionForSlot(ROLE_SLOT[role])) : undefined;
+}
+
+/** The JOB path's engine for one role (2026-11): the same chain as
+ *  resolveEngine, plus the job limits — reasoning control (the engine's
+ *  thinking level must reach the request; NVIDIA's catalog drops it) and a
+ *  capped response size. A background maker on a slow reasoning provider has
+ *  to finish inside the job budget. The tutor's chat engine is untouched. */
+function resolveJobEngine(role: ModelRole): PiEngine | undefined {
+	const spec = resolveRoleSpec(role, stores.settingsStore.readSettings());
+	return spec ? piEngineForSpec(spec, true, undefined, retentionForSlot(ROLE_SLOT[role]), { jobLimits: true }) : undefined;
 }
 
 /** Slot policy is independent of model overrides. Read fresh per operation,

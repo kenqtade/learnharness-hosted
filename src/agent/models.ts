@@ -7,6 +7,7 @@ import {
 	type Model,
 	type Models,
 	type MutableModels,
+	type OpenAICompletionsCompat,
 	type StreamFunction,
 } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
@@ -199,12 +200,49 @@ export function hostedRequestLimits(env: Record<string, string | undefined> = pr
 	return out;
 }
 
+/** The optional knobs of piEngineForSpec — what the CALLER decides about
+ *  the engine it builds. Default: nothing changes (the tutor's chat engine
+ *  never sets any of them). */
+export interface PiEngineOptions {
+	/** JOB makers only (the background job path): keep a slow reasoning
+	 *  provider inside the job's budget —
+	 *   a) REASONING CONTROL: the engine's thinking level must reach the
+	 *      request. NVIDIA's catalog ships supportsReasoningEffort: false and
+	 *      no thinking format, so pi-ai drops the level (the slot's "medium")
+	 *      before the request is built and the model reasons UNCAPPED;
+	 *   b) a TOKEN CAP: maxTokens = min(model.maxTokens, JOB_MAX_TOKENS), so
+	 *      a runaway reasoning phase cannot eat the whole job budget.
+	 *  A caller's own maxTokens still wins. */
+	jobLimits?: boolean;
+}
+
+/** The job path's response ceiling (2026-11): a maker's answer is a brief,
+ *  an SVG or a demo — 32k tokens is generous. The model's own maximum
+ *  (131k–384k on NVIDIA) is what let one reasoning phase run for minutes. */
+const JOB_MAX_TOKENS = 32_000;
+
+/** NVIDIA's catalog ships supportsReasoningEffort: false and no thinking
+ *  format, so pi-ai sends NO reasoning control: the engine's thinking level
+ *  is dropped before the request is built and the model reasons uncapped.
+ *  A model copy that re-enables the effort lets pi-ai send the level as
+ *  reasoning_effort (pi-ai maps the levels itself — openai-completions.js).
+ *  Providers with their own thinking format (deepseek) keep it: pi-ai maps
+ *  those levels through the format, not through reasoning_effort. */
+function withReasoningEffort(model: Model<Api>): Model<Api> {
+	if (model.provider !== "nvidia") return model;
+	if (!model.reasoning) return model;
+	// nvidia models speak the openai-completions dialect.
+	const compat = model.compat as OpenAICompletionsCompat | undefined;
+	if (compat?.thinkingFormat) return model;
+	return { ...model, compat: { ...compat, supportsReasoningEffort: true } };
+}
+
 /** The production engine for a RESOLVED spec (model slots wave,
  *  2026-09-20): provider-aware catalog lookup + thinking clamp. The API
  *  key is resolved by pi-ai itself from the environment per request (the
  *  keys seam reflects file-saved keys into env), so the engine never
  *  hardcodes OpenRouter's. */
-export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (() => boolean) = true, lifecycle?: ChatGPTDispatchLifecycle, cacheRetention?: () => CacheRetention | undefined): PiEngine {
+export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (() => boolean) = true, lifecycle?: ChatGPTDispatchLifecycle, cacheRetention?: () => CacheRetention | undefined, opts: PiEngineOptions = {}): PiEngine {
 	const models: Models = piModels();
 	const nativeId = nativeSubscriptionId(spec.provider);
 	const registeredModel = spec.provider === "chatgpt" ? chatGPTModel(spec.id) : nativeId ? nativeSubscriptionModel(spec.provider, spec.id) : models.getModel(spec.provider, spec.id);
@@ -212,10 +250,13 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 	// Custom endpoint owners authorize image attempts independently of sparse
 	// discovery metadata. Never promote the registered/catalog capabilities.
 	const permitImages = (value: Model<Api>): Model<Api> => ({ ...value, input: ["text", "image"] });
-	const model = custom && registeredModel ? permitImages(registeredModel) : registeredModel;
-	if (!model) {
+	const registered = custom && registeredModel ? permitImages(registeredModel) : registeredModel;
+	if (!registered) {
 		throw new Error(`${spec.provider} catalog has no model ${spec.id}`);
 	}
+	// The JOB path's model copy: the reasoning control (NVIDIA) rides the
+	// model itself — the engine's level only reaches the request through it.
+	const model = opts.jobLimits ? withReasoningEffort(registered) : registered;
 	// UNSET level → the baked default order (first entry the model
 	// supports); SET level → pi's native nearest-clamp (model swaps keep
 	// the user's intent and adapt honestly).
@@ -238,6 +279,8 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 			const requestOptions = {
 				...hostedRequestLimits(),
 				...options,
+				// The job path's token cap — a caller's own maxTokens wins.
+				...(opts.jobLimits ? { maxTokens: options?.maxTokens ?? Math.min(model.maxTokens, JOB_MAX_TOKENS) } : {}),
 				...(retention !== undefined ? { cacheRetention: retention } : {}),
 				reasoning: level === "off" ? undefined : level,
 			};
@@ -252,7 +295,7 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 				const currentLevel = thinkingPreference
 					? clampThinkingLevel(currentModel, thinkingPreference)
 					: defaultThinkingLevel(currentModel);
-				return current.streamSimple(permitImages(currentModel), context, { ...requestOptions, reasoning: currentLevel === "off" ? undefined : currentLevel });
+				return current.streamSimple(withReasoningEffort(permitImages(currentModel)), context, { ...requestOptions, reasoning: currentLevel === "off" ? undefined : currentLevel });
 			}
 			const purpose = typeof background === "function" ? background : () => background;
 			const stream = spec.provider === "chatgpt" ? chatGPTStream(purpose, lifecycle) : nativeId ? nativeSubscriptionStream(models.getProvider(nativeId)!, purpose, lifecycle) : models.streamSimple.bind(models);

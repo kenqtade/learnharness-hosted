@@ -88,12 +88,14 @@ mark on the wrong corner, a vector pointing the wrong way, a point plotted at th
 failure even if it renders cleanly.
 
 Your three tools:
-- write_svg({ svg }) — write the complete <svg>…</svg> source (overwrites the previous version).
+- write_svg({ svg }) — write the complete <svg>…</svg> source (overwrites the previous version). It is
+  RENDERED RIGHT AWAY: the PNG follows in the next message — look at it there.
 - edit_svg({ old_text, new_text }) — a surgical exact-match replacement in the current SVG:
   old_text must appear EXACTLY ONCE; it is replaced by new_text. Call write_svg first. For anything
   beyond a one-spot fix (new elements, restructured layout), write_svg the whole document again.
+  The edited SVG is rendered right away too.
 - render_svg({}) — rasterize the current SVG to a PNG. The render arrives as an image in the
-  message right after the tool result.
+  message right after the tool result. Only needed to look AGAIN at the current SVG.
 
 THE ONE RULE THAT MATTERS MOST: verify by looking. You are done only when you have LOOKED at the
 rendered PNG and confirmed it is true to the brief. Rendering success only proves the SVG parsed; it
@@ -105,8 +107,9 @@ says nothing about whether the geometry is right or the picture is readable. Whe
 - Would a learner instantly read the intended idea from this picture alone?
 
 Workflow: plan the coordinate space (viewBox + margins, nothing touching the edges) → write_svg →
-render_svg → LOOK critically → fix (edit_svg for one-spot fixes, write_svg otherwise) and re-render
-until correct and clean. Never finish without having looked at a render of your FINAL SVG.
+LOOK at the render that follows → fix (edit_svg for one-spot fixes, write_svg otherwise); every
+write and every edit renders again, so keep looking until the picture is correct and clean. Never
+finish without having looked at a render of your FINAL SVG.
 
 SVG requirements:
 - A complete <svg> with explicit width/height AND a matching viewBox.
@@ -143,7 +146,7 @@ export function createVisualTools(): Record<string, Tool> {
 	return {
 		write_svg: {
 			name: "write_svg",
-			description: "Write the complete SVG source for the figure (overwrites any previous version).",
+			description: "Write the complete SVG source for the figure (overwrites any previous version). It is rendered right away — the PNG follows in the next message.",
 			parameters: Type.Object({
 				svg: Type.String({ description: 'Complete <svg xmlns="…">…</svg> markup.' }),
 			}),
@@ -151,7 +154,7 @@ export function createVisualTools(): Record<string, Tool> {
 		edit_svg: {
 			name: "edit_svg",
 			description:
-				"Replace one exact spot in the current SVG: old_text must appear EXACTLY ONCE and is replaced by new_text. Call write_svg first. For larger changes, write_svg the whole document.",
+				"Replace one exact spot in the current SVG: old_text must appear EXACTLY ONCE and is replaced by new_text. Call write_svg first. For larger changes, write_svg the whole document. The edited SVG is rendered right away too.",
 			parameters: Type.Object({
 				old_text: Type.String({ description: "The exact text to replace — must match exactly once in the current SVG." }),
 				new_text: Type.String({ description: "The replacement text." }),
@@ -159,7 +162,7 @@ export function createVisualTools(): Record<string, Tool> {
 		},
 		render_svg: {
 			name: "render_svg",
-			description: "Render the current SVG to a PNG and show it to you for inspection. No arguments.",
+			description: "Render the current SVG to a PNG and show it to you for inspection. No arguments. Only needed to look again — a write or an edit already renders.",
 			parameters: Type.Object({}),
 		},
 	};
@@ -189,6 +192,13 @@ function resumeParagraph(resume: { draft: string; verified: boolean }): string {
 		.filter(Boolean)
 		.join("\n\n");
 }
+
+/** The outcome of ONE render: the image the model gets to look at, or the
+ *  failure that goes back in the tool result ("render" = the raster failed,
+ *  "inspect" = the image could not be processed). */
+type RenderOutcome =
+	| { ok: true; image: Extract<ProcessImageResult, { ok: true }> }
+	| { ok: false; kind: "render" | "inspect"; message: string };
 
 export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerOptions = {}): Promise<VisualResult> {
 	const headless = opts.headless ?? getHeadless();
@@ -258,6 +268,32 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 	let renderedSvg: string | null = resume?.verified ? resume.draft : null;
 	let finalText = "";
 	let captureError: unknown;
+	/** The last successful render: its svg and the image the model saw. The
+	 *  auto-render after a write/edit and render_svg share it, so rendering an
+	 *  unchanged svg again is idempotent (no second raster). */
+	let lastRender: { svg: string; image: Extract<ProcessImageResult, { ok: true }> } | null = null;
+
+	/** Render the CURRENT svg and mark it verified — the ONE code path the
+	 *  auto-render (after write_svg/edit_svg) and render_svg use. A clean
+	 *  render sets renderedSvg, checkpoints the draft as verified and hands
+	 *  the model the PNG; a failure comes back as the tool result's error. */
+	const renderCurrent = async (): Promise<RenderOutcome> => {
+		const svg = currentSvg;
+		if (!svg) return { ok: false, kind: "render", message: "nothing to render — call write_svg first." };
+		if (lastRender && lastRender.svg === svg) return { ok: true, image: lastRender.image };
+		try {
+			const png = await render(svg);
+			const image = await processImage(png, "image/png", { resizeOptions: engine.model.inputLimits?.images?.resize });
+			opts.abortSignal?.throwIfAborted();
+			if (!image.ok) return { ok: false, kind: "inspect", message: image.message };
+			lastRender = { svg, image };
+			renderedSvg = svg;
+			opts.onCheckpoint?.(svg, true);
+			return { ok: true, image };
+		} catch (err) {
+			return { ok: false, kind: "render", message: err instanceof Error ? err.message : String(err) };
+		}
+	};
 
 	try {
 		for (let iteration = 0; iteration < maxIterations; iteration++) {
@@ -289,19 +325,14 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 				// changed since its last render (or was never rendered), show it now
 				// and make the model look before accepting the finish.
 				if (currentSvg && renderedSvg !== currentSvg) {
-					let png: Buffer;
-					try {
-						png = await render(currentSvg);
-					} catch (err) {
-						const msg = err instanceof Error ? err.message : String(err);
-						return { svg: "", notes: `FAILED: rendering the final SVG failed — ${msg}` };
+					const rendered = await renderCurrent();
+					if (!rendered.ok) {
+						return rendered.kind === "render"
+							? { svg: "", notes: `FAILED: rendering the final SVG failed — ${rendered.message}` }
+							: { svg: "", notes: `FAILED: inspecting the final SVG failed — ${rendered.message}` };
 					}
-					const image = await processImage(png, "image/png", { resizeOptions: engine.model.inputLimits?.images?.resize });
-					opts.abortSignal?.throwIfAborted();
-					if (!image.ok) return { svg: "", notes: `FAILED: inspecting the final SVG failed — ${image.message}` };
+					const image = rendered.image;
 					opts.onActivity?.("render_svg: inspecting final render");
-					renderedSvg = currentSvg;
-					opts.onCheckpoint?.(currentSvg, true);
 					messages = [
 						...messages,
 						{
@@ -332,10 +363,28 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 						toolResults.push(toolText(call.id, call.name, `ERROR: ${problem}.`));
 						continue;
 					}
+					const previousSvg = currentSvg;
 					currentSvg = svg;
-					opts.onCheckpoint?.(svg, false);
+					// Only a CHANGED draft is a new checkpoint: re-writing the
+					// same svg must not downgrade a verified draft.
+					if (previousSvg !== svg) opts.onCheckpoint?.(svg, false);
 					opts.onActivity?.(`write_svg: ${(svg.length / 1024).toFixed(1)} KB`);
-					toolResults.push(toolText(call.id, call.name, `Saved (${svg.length} bytes). Call render_svg to look at it.`));
+					// The maker LOOKS at its own draft in the SAME iteration: the
+					// render rides the next model message, so one write costs one
+					// model call (a slow provider used to spend a second call on
+					// render_svg — and often never got there).
+					renderImage = null;
+					const rendered = await renderCurrent();
+					if (!rendered.ok) {
+						opts.onActivity?.("render_svg: render error");
+						toolResults.push(
+							toolText(call.id, call.name, `Saved (${svg.length} bytes) — RENDER ERROR (the SVG may be malformed): ${rendered.message}. Fix it with write_svg and render again.`, true),
+						);
+						continue;
+					}
+					renderImage = rendered.image;
+					opts.onActivity?.("render_svg: inspecting render");
+					toolResults.push(toolText(call.id, call.name, `Saved (${svg.length} bytes). Rendered — the PNG follows in the next message. Look at it.`));
 				} else if (call.name === "edit_svg") {
 					const edit = call.arguments as { old_text?: unknown; new_text?: unknown };
 					if (!currentSvg) {
@@ -369,30 +418,39 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 						toolResults.push(toolText(call.id, call.name, `ERROR: edit not applied — ${problem}.`));
 						continue;
 					}
+					const previousSvg = currentSvg;
 					currentSvg = edited;
-					opts.onCheckpoint?.(edited, false);
+					if (previousSvg !== edited) opts.onCheckpoint?.(edited, false);
 					opts.onActivity?.("edit_svg: applied");
-					toolResults.push(toolText(call.id, call.name, "OK — replaced 1 occurrence. Call render_svg to look at the edited SVG."));
+					// The edit is rendered right away — the model sees the fix.
+					renderImage = null;
+					const rendered = await renderCurrent();
+					if (!rendered.ok) {
+						opts.onActivity?.("render_svg: render error");
+						toolResults.push(
+							toolText(call.id, call.name, `OK — replaced 1 occurrence — RENDER ERROR (the SVG may be malformed): ${rendered.message}. Fix it with write_svg and render again.`, true),
+						);
+						continue;
+					}
+					renderImage = rendered.image;
+					opts.onActivity?.("render_svg: inspecting render");
+					toolResults.push(toolText(call.id, call.name, "OK — replaced 1 occurrence. Rendered — the PNG follows in the next message. Look at it."));
 				} else if (call.name === "render_svg") {
 					if (!currentSvg) {
 						toolResults.push(toolText(call.id, call.name, "ERROR: nothing to render — call write_svg first."));
 						continue;
 					}
-					try {
-						const png = await render(currentSvg);
-						const image = await processImage(png, "image/png", { resizeOptions: engine.model.inputLimits?.images?.resize });
-						opts.abortSignal?.throwIfAborted();
-						if (!image.ok) throw new Error(image.message);
-						renderImage = image;
-						renderedSvg = currentSvg;
-						opts.onCheckpoint?.(currentSvg, true);
-						opts.onActivity?.("render_svg: inspecting render");
-						toolResults.push(toolText(call.id, call.name, "Rendered — the PNG follows in the next message. Look at it."));
-					} catch (err) {
-						const msg = err instanceof Error ? err.message : String(err);
+					// Idempotent: an unchanged svg reuses the render the
+					// auto-render already produced (no second raster).
+					const rendered = await renderCurrent();
+					if (!rendered.ok) {
 						opts.onActivity?.("render_svg: render error");
-						toolResults.push(toolText(call.id, call.name, `RENDER ERROR (the SVG may be malformed): ${msg}. Fix it with write_svg and render again.`));
+						toolResults.push(toolText(call.id, call.name, `RENDER ERROR (the SVG may be malformed): ${rendered.message}. Fix it with write_svg and render again.`));
+						continue;
 					}
+					renderImage = rendered.image;
+					opts.onActivity?.("render_svg: inspecting render");
+					toolResults.push(toolText(call.id, call.name, "Rendered — the PNG follows in the next message. Look at it."));
 				} else {
 					toolResults.push(toolText(call.id, call.name, `ERROR: unknown tool "${call.name}". Use write_svg, edit_svg, or render_svg.`));
 				}
@@ -441,13 +499,13 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 	return { svg: "", notes: `FAILED: iteration limit (${maxIterations}) reached without a verified SVG.` };
 }
 
-function toolText(toolCallId: string, toolName: string, value: string): ToolResultMessage {
+function toolText(toolCallId: string, toolName: string, value: string, isError = value.startsWith("ERROR:") || value.startsWith("RENDER ERROR")): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
 		toolName,
 		content: [{ type: "text", text: value }],
-		isError: value.startsWith("ERROR:") || value.startsWith("RENDER ERROR"),
+		isError,
 		timestamp: Date.now(),
 	};
 }
