@@ -71,6 +71,28 @@ the whole job was thrown away.
 | pdf | works on uploaded PDFs |
 | extraction | runs after the turn, inside the request |
 
+**Job engine limits (new):** the job path's engines get two limits; the tutor's engine does not:
+- a **reasoning control**. NVIDIA's catalog marks every model `supportsReasoningEffort: false`, so
+  the slot's thinking level was silently dropped and reasoning was uncapped. It is now sent as
+  `reasoning_effort`.
+- a **32k token cap**, replacing the model maximum of 131k–384k.
+
+The visual maker also **renders on every write**, so the first successful draft is already a
+verified checkpoint.
+
+**Visual jobs on NVIDIA's free tier are limited by the provider** (measured 2026-11-12 with the
+maker's exact request):
+
+| vision model | what happens |
+|---|---|
+| `z-ai/glm-5.3-flash` | no response headers for 67 s to over 100 s (queue), then about 10 tokens/s. One draft takes about 180 s or more |
+| `minimaxai/minimax-m3.1-flash` | fast (0.3 s), but NVIDIA's tool parser returns `write_svg` with **empty arguments** (`{}`) for a long SVG |
+| `deepseek-v4.1-flash`, `nemotron-3.5-super-vl` | reason past the 240 s budget |
+| `llama-3.2-90b-vision` | fast, but writes a stub |
+
+Demo jobs work (`demo-direct` ok in 58–79 s). For reliable visuals, use a vision slot on a provider
+with fast, intact tool calls, for example a BYOK OpenRouter, Gemini or OpenAI key.
+
 ## 3. Auto-update (CI): safe, free, fixes-only
 
 **State:**

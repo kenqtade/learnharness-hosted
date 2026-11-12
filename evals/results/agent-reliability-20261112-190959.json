@@ -1,0 +1,43 @@
+{
+ "meta": {
+  "when": "20261112-190959",
+  "url": "https://learnharness-multiuser.vercel.app",
+  "teacher": "nvidia/minimaxai/minimax-m3.1-flash"
+ },
+ "results": [
+  {
+   "scenario": "visual-direct",
+   "teacher": "nvidia/minimaxai/minimax-m3.1-flash",
+   "turns": [],
+   "jobs": {
+    "job_mwdxa0us_6a9b3247": {
+     "kind": "visual",
+     "firstSeen": 1794510600.5627203,
+     "steps": [
+      0
+     ],
+     "lastChange": 1794511322.9763892,
+     "maxStall": 12,
+     "updatedAt": "2026-11-12T19:22:01.659Z",
+     "activity": [
+      "recovering: re-running",
+      "drawing figure",
+      "failed"
+     ],
+     "attempts": 3,
+     "status": "error",
+     "error": "ran out of time \u2014 the job was stopped at the hosting time limit 3 times without finishing",
+     "delivery": "delivered",
+     "secs": 722,
+     "created": "2026-11-12T19:10:00.148Z",
+     "resumed": true
+    }
+   },
+   "outcome": "job-error",
+   "detail": "job_mwdxa0us_6a9b3247: ran out of time \u2014 the job was stopped at the hosting time limit 3 times without finishing",
+   "spawn": 202,
+   "secs": 723,
+   "keptChat": "chat_mwdxa0f3_6d1d9d47"
+  }
+ ]
+}

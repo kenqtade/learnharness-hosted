@@ -1,0 +1,43 @@
+{
+ "meta": {
+  "when": "20261112-190556",
+  "url": "https://learnharness-multiuser.vercel.app",
+  "teacher": "nvidia/minimaxai/minimax-m3.1-flash"
+ },
+ "results": [
+  {
+   "scenario": "visual-direct",
+   "teacher": "nvidia/minimaxai/minimax-m3.1-flash",
+   "turns": [],
+   "jobs": {
+    "job_mwdx4vf0_fe68c70b": {
+     "kind": "visual",
+     "firstSeen": 1794510360.190428,
+     "steps": [
+      0
+     ],
+     "lastChange": 1794510566.3594124,
+     "maxStall": 10,
+     "updatedAt": "2026-11-12T19:09:23.891Z",
+     "activity": [
+      "recovering: re-running",
+      "drawing figure",
+      "failed"
+     ],
+     "attempts": 1,
+     "status": "error",
+     "error": "FAILED: the maker crashed \u2014 Request timed out.",
+     "delivery": "delivered",
+     "secs": 206,
+     "created": "2026-11-12T19:05:59.820Z",
+     "resumed": false
+    }
+   },
+   "outcome": "job-error",
+   "detail": "job_mwdx4vf0_fe68c70b: FAILED: the maker crashed \u2014 Request timed out.",
+   "spawn": 202,
+   "secs": 210,
+   "keptChat": "chat_mwdx4srk_d78e78c4"
+  }
+ ]
+}

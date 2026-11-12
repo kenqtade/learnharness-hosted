@@ -1,0 +1,78 @@
+{
+ "meta": {
+  "when": "20261112-185939",
+  "url": "https://learnharness-multiuser.vercel.app",
+  "teacher": "nvidia/minimaxai/minimax-m3.1-flash"
+ },
+ "results": [
+  {
+   "scenario": "visual-direct",
+   "teacher": "nvidia/minimaxai/minimax-m3.1-flash",
+   "turns": [],
+   "jobs": {
+    "job_mwdwwsot_c087e121": {
+     "kind": "visual",
+     "firstSeen": 1794509983.3908482,
+     "steps": [
+      0
+     ],
+     "lastChange": 1794510107.7225628,
+     "maxStall": 10,
+     "updatedAt": "2026-11-12T19:01:47.344Z",
+     "activity": [
+      "recovering: re-running",
+      "drawing figure",
+      "failed"
+     ],
+     "attempts": 1,
+     "status": "error",
+     "error": "FAILED: the maker crashed \u2014 Request timed out.",
+     "delivery": "delivered",
+     "secs": 124,
+     "created": "2026-11-12T18:59:43.037Z",
+     "resumed": false
+    }
+   },
+   "outcome": "job-error",
+   "detail": "job_mwdwwsot_c087e121: FAILED: the maker crashed \u2014 Request timed out.",
+   "spawn": 202,
+   "secs": 127,
+   "keptChat": "chat_mwdwwqhg_b64a7c56"
+  },
+  {
+   "scenario": "demo-direct",
+   "teacher": "nvidia/minimaxai/minimax-m3.1-flash",
+   "turns": [],
+   "jobs": {
+    "job_mwdwzj2b_498f888b": {
+     "kind": "demo",
+     "firstSeen": 1794510110.8436987,
+     "steps": [
+      0,
+      2,
+      3
+     ],
+     "lastChange": 1794510151.6668348,
+     "maxStall": 10,
+     "updatedAt": "2026-11-12T19:02:27.513Z",
+     "activity": [
+      "building demo",
+      "run_demo",
+      "finished"
+     ],
+     "attempts": 1,
+     "status": "done",
+     "error": "",
+     "delivery": "delivered",
+     "secs": 41,
+     "created": "2026-11-12T19:01:50.531Z",
+     "resumed": false
+    }
+   },
+   "outcome": "ok",
+   "detail": "",
+   "spawn": 202,
+   "secs": 58
+  }
+ ]
+}
