@@ -146,6 +146,23 @@ function scriptedModel(
 	return { model: faux.getModel(), streamFn: faux.streamSimple };
 }
 
+/** A raw faux engine: one FauxResponseStep per model call, so a step may be a
+ *  function that throws — a provider/connection failure. scriptedModel's turns
+ *  only express tool calls and final text, which cannot fail a model call. */
+function rawModel(steps: FauxResponseStep[]): PiEngine {
+	const faux = createFauxCore({ tokenSize: { min: 64, max: 64 } });
+	faux.setResponses(steps);
+	return { model: faux.getModel(), streamFn: faux.streamSimple };
+}
+
+/** A provider failure mid-run (e.g. the 60 s per-request timeout that the
+ *  maker's streamOnce surfaces as a thrown error). */
+function providerError(message: string): FauxResponseStep {
+	return () => {
+		throw new Error(message);
+	};
+}
+
 /** The first user message's text as the model saw it (content blocks joined). */
 function firstUserText(context: { messages: Array<{ role: string; content: unknown }> }): string {
 	const user = context.messages.find((m) => m.role === "user");
@@ -740,6 +757,59 @@ describe("demo builder (fake model + fake headless)", () => {
 		assert.equal(result.html, GOOD_HTML);
 		assert.deepEqual(headless.demoRuns, [GOOD_HTML], "the gate re-ran it — 'verified' never shortcuts the house rule");
 	});
+
+	// Salvage (2026-11): a provider/connection failure after a clean run is not
+	// a failure of the WORK — deliver the tested draft instead of throwing it
+	// away. An aborted run (the hosting deadline) still fails; the job runner's
+	// checkpoint/resume path owns aborts.
+	it("delivers the last tested draft when the model connection fails after a clean run", async () => {
+		const headless = fakeHeadless();
+		const model = rawModel([
+			fauxAssistantMessage([fauxToolCall("write_demo", { html: GOOD_HTML }, { id: "w1" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("run_demo", {}, { id: "r1" })], { stopReason: "toolUse" }),
+			providerError("Request timed out"),
+		]);
+		const result = await runDemoBuilder({ title: "T", brief: "b" }, { engine: model, headless });
+		assert.equal(result.html, GOOD_HTML, "the tested draft is delivered");
+		assert.equal(result.tested, true);
+		assert.match(
+			result.notes ?? "",
+			/^Delivered the last tested draft: the model connection failed \(Request timed out\) before the builder finished polishing it\.$/,
+		);
+		assert.equal(headless.demoRuns.length, 1, "the draft was tested exactly once — no re-run");
+	});
+
+	it("never delivers an untested draft: an unrun draft still FAILS on a model-connection error", async () => {
+		const headless = fakeHeadless();
+		const model = rawModel([
+			fauxAssistantMessage([fauxToolCall("write_demo", { html: GOOD_HTML }, { id: "w1" })], { stopReason: "toolUse" }),
+			providerError("Request timed out"),
+		]);
+		const result = await runDemoBuilder({ title: "T", brief: "b" }, { engine: model, headless });
+		assert.equal(result.html, "");
+		assert.equal(result.tested, true);
+		assert.match(result.notes ?? "", /^FAILED: the builder crashed — Request timed out/);
+		assert.equal(headless.demoRuns.length, 0, "the untested draft is never delivered or verified");
+	});
+
+	it("an aborted run (hosting deadline) still FAILS even with a tested draft", async () => {
+		const headless = fakeHeadless();
+		const controller = new AbortController();
+		const model = rawModel([
+			fauxAssistantMessage([fauxToolCall("write_demo", { html: GOOD_HTML }, { id: "w1" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("run_demo", {}, { id: "r1" })], { stopReason: "toolUse" }),
+			() => {
+				controller.abort();
+				throw new Error("Request timed out");
+			},
+		]);
+		const result = await runDemoBuilder(
+			{ title: "T", brief: "b" },
+			{ engine: model, headless, abortSignal: controller.signal },
+		);
+		assert.equal(result.html, "", "an abort is the hosting deadline, not a salvageable crash");
+		assert.match(result.notes ?? "", /^FAILED: the builder crashed/);
+	});
 });
 
 // ─── 4. the visual-maker loop ────────────────────────────────────────────────
@@ -901,6 +971,57 @@ describe("visual maker (fake model + fake headless)", () => {
 		assert.match(prompts[0]!, /stopped at the hosting time limit/);
 		assert.match(prompts[0]!, /already loaded/);
 		assert.ok(prompts[0]!.includes(SVG_1), "the draft rides the prompt so edit_svg old_text can match");
+	});
+
+	// Salvage (2026-11): a provider/connection failure after the last draft was
+	// rendered is not a failure of the WORK — deliver what was looked at, like
+	// the iteration-limit path. An aborted run (the hosting deadline) still
+	// fails; the job runner's checkpoint/resume path owns aborts.
+	it("delivers the last rendered draft when the model connection fails", async () => {
+		const headless = fakeHeadless();
+		const model = rawModel([
+			fauxAssistantMessage([fauxToolCall("write_svg", { svg: SVG_1 }, { id: "w1" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("render_svg", {}, { id: "r1" })], { stopReason: "toolUse" }),
+			providerError("Request timed out"),
+		]);
+		const result = await runVisualMaker({ brief: "b" }, { engine: model, headless });
+		assert.equal(result.svg, SVG_1, "the rendered draft is delivered");
+		assert.match(
+			result.notes ?? "",
+			/^Delivered the last rendered draft: the model connection failed \(Request timed out\) before the maker finished polishing it\.$/,
+		);
+		assert.equal(headless.svgRenders.length, 1, "the draft was rendered exactly once");
+	});
+
+	it("never delivers an unrendered draft: a written-but-unrendered svg still FAILS on a model-connection error", async () => {
+		const headless = fakeHeadless();
+		const model = rawModel([
+			fauxAssistantMessage([fauxToolCall("write_svg", { svg: SVG_1 }, { id: "w1" })], { stopReason: "toolUse" }),
+			providerError("Request timed out"),
+		]);
+		const result = await runVisualMaker({ brief: "b" }, { engine: model, headless });
+		assert.equal(result.svg, "");
+		assert.match(result.notes ?? "", /^FAILED: the maker crashed — Request timed out/);
+		assert.equal(headless.svgRenders.length, 0, "the unrendered draft is never delivered");
+	});
+
+	it("an aborted run (hosting deadline) still FAILS even with a rendered draft", async () => {
+		const headless = fakeHeadless();
+		const controller = new AbortController();
+		const model = rawModel([
+			fauxAssistantMessage([fauxToolCall("write_svg", { svg: SVG_1 }, { id: "w1" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("render_svg", {}, { id: "r1" })], { stopReason: "toolUse" }),
+			() => {
+				controller.abort();
+				throw new Error("Request timed out");
+			},
+		]);
+		const result = await runVisualMaker(
+			{ brief: "b" },
+			{ engine: model, headless, abortSignal: controller.signal },
+		);
+		assert.equal(result.svg, "", "an abort is the hosting deadline, not a salvageable crash");
+		assert.match(result.notes ?? "", /^FAILED: the maker crashed/);
 	});
 });
 

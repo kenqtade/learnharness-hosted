@@ -255,6 +255,19 @@ export async function runDemoBuilder(input: DemoBuilderInput, opts: DemoBuilderO
 		finalText = result.text;
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
+		// Salvage (2026-11): a provider/connection failure AFTER the current
+		// document passed a headless run is not a failure of the work — deliver
+		// the tested draft with an honest note. Aborts are the hosting deadline,
+		// owned by the job runner's checkpoint/resume path, so an aborted run
+		// keeps failing here. An untested draft is NEVER delivered.
+		if (!opts.abortSignal?.aborted && state.html && state.testedHtml === state.html && state.lastResult?.ok) {
+			return {
+				title,
+				html: state.html,
+				tested: true,
+				notes: `Delivered the last tested draft: the model connection failed (${msg}) before the builder finished polishing it.`,
+			};
+		}
 		return { title, html: "", tested: true, notes: `FAILED: the builder crashed — ${msg}` };
 	}
 

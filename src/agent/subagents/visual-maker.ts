@@ -417,6 +417,18 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 	} catch (err) {
 		captureError = err;
 		const msg = err instanceof Error ? err.message : String(err);
+		// Salvage (2026-11): a provider/connection failure AFTER the last draft
+		// was rendered is not a failure of the work — deliver exactly what was
+		// looked at, like the iteration-limit path below. Aborts are the hosting
+		// deadline, which the job runner's checkpoint/resume path owns, so an
+		// aborted run keeps failing here. Nothing unlooked is ever delivered.
+		if (!opts.abortSignal?.aborted && currentSvg && renderedSvg === currentSvg) {
+			return finish(
+				currentSvg,
+				`Delivered the last rendered draft: the model connection failed (${msg}) before the maker finished polishing it.`,
+				learnerImage,
+			);
+		}
 		return { svg: "", notes: `FAILED: the maker crashed — ${msg}` };
 	} finally {
 		capture?.finish(captureError);
