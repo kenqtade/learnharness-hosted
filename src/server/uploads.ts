@@ -156,6 +156,11 @@ async function removeBlobQuietly(storageId: string): Promise<void> {
 
 // ─── public operations ────────────────────────────────────────────────────
 
+/** True when the UI should offer uploads on this deployment. */
+export function uploadsEnabled(): boolean {
+	return hostedFileAccess();
+}
+
 /** A URL the browser uploads to directly. */
 export async function createUploadUrl(): Promise<string> {
 	requireUploads();
