@@ -1,0 +1,149 @@
+{
+ "meta": {
+  "when": "20261111-144450",
+  "url": "https://learnharness-multiuser.vercel.app",
+  "teacher": "nvidia/minimaxai/minimax-m3.1-flash"
+ },
+ "results": [
+  {
+   "scenario": "turn",
+   "teacher": "nvidia/minimaxai/minimax-m3.1-flash",
+   "turns": [
+    {
+     "label": "opening",
+     "http": 200,
+     "startSecs": 2.5,
+     "secs": 95.8
+    },
+    {
+     "label": "answer-1",
+     "http": 200,
+     "startSecs": 0.3,
+     "secs": 37.0
+    },
+    {
+     "label": "answer-2",
+     "http": 200,
+     "startSecs": 2.5,
+     "secs": 136.1
+    },
+    {
+     "label": "answer-3",
+     "http": 200,
+     "startSecs": 0.6,
+     "secs": 291.1,
+     "continuations": 2,
+     "error": "This reply ran out of time: the model had not finished within the server's 270 s time budget, so the turn was stopped before the hard limit. Send your message again, or pick a faster model in Settings."
+    }
+   ],
+   "jobs": {},
+   "outcome": "turn-error",
+   "detail": "answer-3: This reply ran out of time: the model had not finished within the server's 270 s time budget, so the turn was stopped before the hard limit. Send your message again, or pick a faster model in Settings. (after 291.1s)",
+   "secs": 567,
+   "toolCalls": [
+    "list_sessions",
+    "list_propositions",
+    "list_propositions",
+    "list_propositions",
+    "ask_user_question",
+    "ask_user_question",
+    "probe",
+    "probe_done"
+   ]
+  },
+  {
+   "scenario": "visual-direct",
+   "teacher": "nvidia/minimaxai/minimax-m3.1-flash",
+   "turns": [],
+   "jobs": {
+    "job_mwc8pdvx_697d70af": {
+     "kind": "visual",
+     "firstSeen": 1794408860.617999,
+     "steps": [
+      0
+     ],
+     "lastChange": 1794409586.5752182,
+     "maxStall": 10,
+     "updatedAt": "2026-11-11T15:06:23.619Z",
+     "activity": [
+      "recovering: re-running",
+      "drawing figure",
+      "failed"
+     ],
+     "status": "error",
+     "error": "ran out of time \u2014 the job was stopped at the hosting time limit 3 times without finishing",
+     "delivery": "delivered",
+     "secs": 726,
+     "created": "2026-11-11T14:54:20.301Z",
+     "resumed": false
+    }
+   },
+   "outcome": "job-error",
+   "detail": "job_mwc8pdvx_697d70af: ran out of time \u2014 the job was stopped at the hosting time limit 3 times without finishing",
+   "spawn": 202,
+   "secs": 727
+  },
+  {
+   "scenario": "demo-direct",
+   "teacher": "nvidia/minimaxai/minimax-m3.1-flash",
+   "turns": [],
+   "jobs": {
+    "job_mwc94z27_63ec03bf": {
+     "kind": "demo",
+     "firstSeen": 1794409587.8459456,
+     "steps": [
+      0
+     ],
+     "lastChange": 1794410315.9903173,
+     "maxStall": 10,
+     "updatedAt": "2026-11-11T15:18:32.313Z",
+     "activity": [
+      "building demo",
+      "failed"
+     ],
+     "status": "error",
+     "error": "ran out of time \u2014 the job was stopped at the hosting time limit 3 times without finishing",
+     "delivery": "delivered",
+     "secs": 728,
+     "created": "2026-11-11T15:06:27.582Z",
+     "resumed": false
+    }
+   },
+   "outcome": "job-error",
+   "detail": "job_mwc94z27_63ec03bf: ran out of time \u2014 the job was stopped at the hosting time limit 3 times without finishing",
+   "spawn": 202,
+   "secs": 729
+  },
+  {
+   "scenario": "demo-deadline",
+   "teacher": "nvidia/minimaxai/minimax-m3.1-flash",
+   "turns": [],
+   "jobs": {
+    "job_mwc9klxt_66b149a3": {
+     "kind": "demo",
+     "firstSeen": 1794410317.3520179,
+     "steps": [
+      0
+     ],
+     "lastChange": 1794410378.709529,
+     "maxStall": 10,
+     "updatedAt": "2026-11-11T15:19:38.420Z",
+     "activity": [
+      "building demo",
+      "failed"
+     ],
+     "status": "error",
+     "error": "ran out of time \u2014 the job was stopped at the hosting time limit 3 times without finishing",
+     "delivery": "delivered",
+     "secs": 61,
+     "created": "2026-11-11T15:18:37.073Z",
+     "resumed": false
+    }
+   },
+   "outcome": "job-not-resumed",
+   "detail": "job_mwc9klxt_66b149a3: out of time but never resumed in a fresh run (activity ['building demo', 'failed'])",
+   "spawn": 202,
+   "secs": 62
+  }
+ ]
+}

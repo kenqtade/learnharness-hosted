@@ -1,0 +1,65 @@
+{
+ "meta": {
+  "when": "20261111-152544",
+  "url": "https://learnharness-multiuser.vercel.app",
+  "teacher": "nvidia/minimaxai/minimax-m3.1-flash"
+ },
+ "results": [
+  {
+   "scenario": "turn",
+   "teacher": "nvidia/minimaxai/minimax-m3.1-flash",
+   "turns": [
+    {
+     "label": "opening",
+     "http": 200,
+     "startSecs": 2.7,
+     "secs": 176.9,
+     "error": "Service temporarily unavailable"
+    }
+   ],
+   "jobs": {},
+   "outcome": "turn-error",
+   "detail": "opening: Service temporarily unavailable (after 176.9s)",
+   "secs": 180,
+   "toolCalls": [
+    "list_sessions",
+    "list_propositions",
+    "list_propositions",
+    "list_propositions"
+   ]
+  },
+  {
+   "scenario": "demo-deadline",
+   "teacher": "nvidia/minimaxai/minimax-m3.1-flash",
+   "turns": [],
+   "jobs": {
+    "job_mwc9xnz3_88c83641": {
+     "kind": "demo",
+     "firstSeen": 1794410926.571067,
+     "steps": [
+      0
+     ],
+     "lastChange": 1794410998.229609,
+     "maxStall": 10,
+     "updatedAt": "2026-11-11T15:29:50.007Z",
+     "activity": [
+      "recovering: re-running",
+      "building demo",
+      "failed"
+     ],
+     "attempts": 3,
+     "status": "error",
+     "error": "ran out of time \u2014 the job was stopped at the hosting time limit 3 times without finishing",
+     "delivery": "delivered",
+     "secs": 72,
+     "created": "2026-11-11T15:28:46.239Z",
+     "resumed": true
+    }
+   },
+   "outcome": "ok",
+   "detail": "",
+   "spawn": 202,
+   "secs": 135
+  }
+ ]
+}
