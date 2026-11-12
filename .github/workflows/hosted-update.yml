@@ -149,6 +149,12 @@ jobs:
           SMOKE_USER: ${{ secrets.STAGING_OWNER_USER || 'owner' }}
           SMOKE_PASSWORD: ${{ secrets.STAGING_OWNER_PASSWORD }}
         run: python3 scripts/ci/smoke.py
+      - name: Uploads check on staging (6 MB direct-to-storage, limits, cleanup)
+        env:
+          SMOKE_URL: ${{ secrets.STAGING_URL }}
+          SMOKE_USER: ${{ secrets.STAGING_OWNER_USER || 'owner' }}
+          SMOKE_PASSWORD: ${{ secrets.STAGING_OWNER_PASSWORD }}
+        run: python3 scripts/ci/uploads-live.py
       - name: Back up production data (encrypted)
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY_PRODUCTION }}
