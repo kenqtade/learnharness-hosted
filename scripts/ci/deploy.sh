@@ -40,18 +40,21 @@ LOG=$(mktemp)
 # demand both); the project.json above is the single source.
 (cd "$OUT" && env -u VERCEL_ORG_ID -u VERCEL_PROJECT_ID npx --yes vercel@latest deploy --prod --yes \
 	--build-env LH_AUTO_UPDATE=0 --token "$VERCEL_TOKEN") >"$LOG" 2>&1 || true
-grep -E "Production|Aliased|Ready|Error" "$LOG" | tail -5 || true
-if grep -q "Error" "$LOG" && ! grep -q "Aliased" "$LOG"; then
+grep -E "^(Error|▲ Aliased|✓ Ready)|Production +https" "$LOG" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | tail -5 || true
+DEPLOY_URL=$(sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$LOG" | grep -oE "https://[a-z0-9-]+\.vercel\.app" | grep -v "^$URL$" | head -1)
+if ! grep -q "Aliased" "$LOG" || [ -z "$DEPLOY_URL" ]; then
 	echo "✖ Vercel deploy failed — the previous deployment stays live" >&2
 	tail -40 "$LOG" >&2
 	exit 1
 fi
-
-echo "▶ Waiting for $URL to serve v$VERSION"
+# The alias must now point at THIS deployment (same version as before is normal).
+NEW_ID=$(curl -fsS -H "Authorization: Bearer $VERCEL_TOKEN" \
+	"https://api.vercel.com/v13/deployments/${DEPLOY_URL#https://}?teamId=$VERCEL_ORG_ID" | node -p "JSON.parse(require('fs').readFileSync(0)).id")
+echo "▶ Waiting for $URL to serve $NEW_ID (v$VERSION)"
 for _ in $(seq 1 30); do
-	got=$(curl -fsS "$URL/api/version" 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).version)}catch{console.log('')}})")
-	[ "$got" = "$VERSION" ] && { echo "✔ $TARGET serves v$VERSION ($SHA)"; exit 0; }
+	got=$(curl -fsS "$URL/api/version" 2>/dev/null || true)
+	case "$got" in *"\"$VERSION\""*"$NEW_ID"*) echo "✔ $TARGET serves v$VERSION ($SHA, $NEW_ID)"; exit 0 ;; esac
 	sleep 10
 done
-echo "✖ $URL never served v$VERSION (last: ${got:-none})" >&2
+echo "✖ $URL never served $NEW_ID (last: ${got:-none})" >&2
 exit 1
