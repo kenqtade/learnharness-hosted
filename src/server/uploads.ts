@@ -24,6 +24,9 @@ import { addUpload, listUploads, removeUpload, type UploadEntry } from "../store
 import { convexMode } from "../store/vfs.ts";
 import { hostedFileAccess, userUploadsDir } from "./hosted-files.ts";
 
+/** The signed-in user's index, for the /api/files listing (barrel export). */
+export { listUploads, type UploadEntry };
+
 export const uploadLimits = {
 	/** 25 MB per file (the browser also checks this before uploading). */
 	maxFileBytes: 25 * 1024 * 1024,
@@ -237,7 +240,17 @@ export async function materializeUploads(): Promise<void> {
 		.map((entry) => [entry.id, entry.name, entry.size, entry.storageId ?? ""].join("\u0000"))
 		.sort()
 		.join("\n");
-	if (materialized.get(dir) === signature) return;
+	if (materialized.get(dir) === signature) {
+		// Cheap verification: the cache only skips when the folder really still
+		// holds exactly the indexed names (a stray file is not "nothing changed").
+		try {
+			const actual = fs.readdirSync(/* turbopackIgnore: true */ dir);
+			const indexed = new Set(entries.map((entry) => entry.name));
+			if (actual.length === indexed.size && actual.every((name) => indexed.has(name))) return;
+		} catch {
+			// missing folder — materialize it below
+		}
+	}
 
 	fs.mkdirSync(/* turbopackIgnore: true */ dir, { recursive: true, mode: 0o700 });
 	const indexed = new Set(entries.map((entry) => entry.name));
