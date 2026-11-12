@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { PaperclipIcon } from "lucide-react";
 import { directoryReferencePath, quoteFilePath } from "@/src/core";
 import { Hint } from "@/components/ui/hint";
+import { useMe } from "@/components/account/use-me";
 import { INSERT_FILE_PATHS_EVENT } from "@/components/path-input";
 import { BROWSER_NOTICE } from "@/components/file-path-drop-zone";
 import { InteractionLayerOwner, useInteractionLayer, useInteractionLayers, useOptionalInteractionLayers } from "./interaction-layers";
@@ -49,6 +50,25 @@ function useDesktopPaths(): boolean {
 	return useSyncExternalStore(noSubscribe, () => Boolean(window.lh?.getPathForFile), () => false);
 }
 
+/** HOSTED FORK — the browser's upload cap (src/server/uploads.ts enforces
+ *  the same number; Convex refuses larger files too). */
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+function uploadTooLarge(file: File): string {
+	const mb = (file.size / (1024 * 1024)).toFixed(1);
+	return `${file.name} is ${mb} MB. Files can be up to 25 MB.`;
+}
+
+async function uploadError(response: Response, fallback: string): Promise<string> {
+	try {
+		const body = (await response.json()) as { error?: unknown };
+		if (typeof body.error === "string" && body.error) return body.error;
+	} catch {
+		// non-JSON error body
+	}
+	return fallback;
+}
+
 /** The choice menu owns Escape with the same layer law as MenuShell, while
  * retaining its paperclip/composer-specific geometry. Mount separately so a
  * closed button remains safe in standalone/static renders. Notices are passive. */
@@ -85,6 +105,10 @@ export function AttachFilesButton({ editorRef }: { editorRef: React.RefObject<HT
 	const controller = useOptionalInteractionLayers();
 	const pickerRef = useRef<HTMLInputElement>(null);
 	const desktop = useDesktopPaths();
+	const me = useMe();
+	// HOSTED FORK: no desktop bridge, but the server offers uploads.
+	const hostedUploads = !desktop && me?.uploads === true;
+	const uploading = useRef(false);
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	const popupRef = useRef<HTMLDivElement>(null);
 	const choosingFolder = useRef(false);
@@ -140,6 +164,58 @@ export function AttachFilesButton({ editorRef }: { editorRef: React.RefObject<HT
 		} catch { setNotice("Could not choose a folder. Try again."); }
 		finally { choosingFolder.current = false; }
 	};
+	/** HOSTED FORK: upload each picked file straight to blob storage, then
+	 *  index it and insert the returned path exactly like a desktop pick. */
+	const uploadPicked = async (files: File[]) => {
+		if (uploading.current) return;
+		uploading.current = true;
+		const paths: string[] = [];
+		const problems: string[] = [];
+		try {
+			for (const [index, file] of files.entries()) {
+				if (file.size > MAX_UPLOAD_BYTES) { problems.push(uploadTooLarge(file)); continue; }
+				setNotice(`Uploading ${index + 1} of ${files.length}: ${file.name}`);
+				try {
+					const started = await fetch("/api/files", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ action: "upload-url" }),
+					});
+					if (!started.ok) throw new Error(await uploadError(started, "Could not start the upload."));
+					const { url } = (await started.json()) as { url?: unknown };
+					if (typeof url !== "string") throw new Error("Could not start the upload.");
+
+					const uploaded = await fetch(url, {
+						method: "POST",
+						headers: { "Content-Type": file.type || "application/octet-stream" },
+						body: file,
+					});
+					if (!uploaded.ok) throw new Error("Could not upload the file. Try again.");
+					const { storageId } = (await uploaded.json()) as { storageId?: unknown };
+					if (typeof storageId !== "string") throw new Error("The upload did not return a storage id.");
+
+					const committed = await fetch("/api/files", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ action: "commit", storageId, name: file.name }),
+					});
+					if (!committed.ok) throw new Error(await uploadError(committed, "Could not save the upload."));
+					const entry = (await committed.json()) as { path?: unknown };
+					if (typeof entry.path !== "string") throw new Error("Could not save the upload.");
+					paths.push(entry.path);
+				} catch (error) {
+					problems.push(`${file.name}: ${(error as Error).message}`);
+				}
+			}
+		} finally {
+			uploading.current = false;
+			setNotice(problems.length ? problems.join(" ") : "");
+		}
+		const editor = editorRef.current;
+		if (paths.length > 0 && editor?.isConnected && editor === editorRef.current) {
+			editor.dispatchEvent(new CustomEvent(INSERT_FILE_PATHS_EVENT, { detail: paths }));
+		}
+	};
 	return (
 		<div className="relative shrink-0"
 			onBlur={(event) => { if (isInteractionScopeEligible(popupRef.current ?? buttonRef.current, controller) && !event.currentTarget.contains(event.relatedTarget) && !popupRef.current?.contains(event.relatedTarget)) setOpen(false); }}>
@@ -150,22 +226,30 @@ export function AttachFilesButton({ editorRef }: { editorRef: React.RefObject<HT
 				hidden
 				data-testid="attach-files-input"
 				onChange={(e) => {
+					const files = Array.from(e.currentTarget.files ?? []);
 					const resolve = window.lh?.getPathForFile;
-					const { paths } = resolve ? pathsForFiles(Array.from(e.currentTarget.files ?? []), resolve) : { paths: [] };
-					if (paths.length > 0) editorRef.current?.dispatchEvent(new CustomEvent(INSERT_FILE_PATHS_EVENT, { detail: paths }));
+					if (resolve) {
+						const { paths } = pathsForFiles(files, resolve);
+						if (paths.length > 0) editorRef.current?.dispatchEvent(new CustomEvent(INSERT_FILE_PATHS_EVENT, { detail: paths }));
+					} else if (hostedUploads) {
+						void uploadPicked(files);
+					}
 					e.currentTarget.value = ""; // allow re-picking the same file
 				}}
 			/>
-			<Hint label={desktop ? "Attach files or a folder" : BROWSER_NOTICE}>
+			<Hint label={desktop ? "Attach files or a folder" : hostedUploads ? "Attach files" : BROWSER_NOTICE}>
 				<button
 					ref={buttonRef}
 					type="button"
 					aria-label="Attach files"
-					aria-disabled={!desktop}
-					aria-haspopup="menu"
-					aria-expanded={open}
+					aria-disabled={!desktop && !hostedUploads}
+					aria-haspopup={desktop ? "menu" : undefined}
+					aria-expanded={desktop ? open : undefined}
 					data-testid="attach-files"
-					onClick={() => { if (desktop) { setNotice(""); setOpen(!open); } }}
+					onClick={() => {
+						if (desktop) { setNotice(""); setOpen(!open); }
+						else if (hostedUploads) { setNotice(""); pickerRef.current?.click(); }
+					}}
 					className="flex size-10 shrink-0 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground aria-disabled:cursor-default aria-disabled:opacity-40 aria-disabled:hover:bg-transparent aria-disabled:hover:text-muted-foreground"
 				>
 					<PaperclipIcon className="size-4" />
