@@ -122,20 +122,42 @@ after(() => {
 
 /** A scripted pi engine (faux provider): the response queue replaces the old
  *  doGenerate turn counter — one queued response per model call (tool-call
- *  turn or final text), consumed in order. */
-function scriptedModel(turns: Array<{ toolCalls?: Array<{ toolCallId: string; toolName: string; input: unknown }>; text?: string }>): PiEngine {
+ *  turn or final text), consumed in order. `onContext` sees the exact
+ *  context each call received (used to assert the resume prompt). */
+function scriptedModel(
+	turns: Array<{ toolCalls?: Array<{ toolCallId: string; toolName: string; input: unknown }>; text?: string }>,
+	onContext?: (context: { messages: Array<{ role: string; content: unknown }> }) => void,
+): PiEngine {
 	const steps: FauxResponseStep[] = turns.map((step) => {
-		if (step.toolCalls) {
-			return fauxAssistantMessage(
-				step.toolCalls.map((c) => fauxToolCall(c.toolName, c.input as ToolCall["arguments"], { id: c.toolCallId })),
-				{ stopReason: "toolUse" },
-			);
-		}
-		return fauxAssistantMessage(step.text ?? "");
+		const message = step.toolCalls
+			? fauxAssistantMessage(
+					step.toolCalls.map((c) => fauxToolCall(c.toolName, c.input as ToolCall["arguments"], { id: c.toolCallId })),
+					{ stopReason: "toolUse" },
+				)
+			: fauxAssistantMessage(step.text ?? "");
+		if (!onContext) return message;
+		return ((context: { messages: Array<{ role: string; content: unknown }> }) => {
+			onContext(context);
+			return message;
+		}) as unknown as FauxResponseStep;
 	});
 	const faux = createFauxCore({ tokenSize: { min: 64, max: 64 } });
 	faux.setResponses(steps);
 	return { model: faux.getModel(), streamFn: faux.streamSimple };
+}
+
+/** The first user message's text as the model saw it (content blocks joined). */
+function firstUserText(context: { messages: Array<{ role: string; content: unknown }> }): string {
+	const user = context.messages.find((m) => m.role === "user");
+	if (!user) return "";
+	if (typeof user.content === "string") return user.content;
+	if (Array.isArray(user.content)) {
+		return (user.content as Array<{ type?: string; text?: string }>)
+			.filter((part) => part.type === "text")
+			.map((part) => part.text ?? "")
+			.join("\n");
+	}
+	return "";
 }
 
 // ─── fake headless ───────────────────────────────────────────────────────────
@@ -667,6 +689,57 @@ describe("demo builder (fake model + fake headless)", () => {
 		assert.equal(result.html, "");
 		assert.match(result.notes ?? "", /^FAILED: the builder never wrote a demo/);
 	});
+
+	it("checkpoints the draft on write and marks it verified only after a passing run_demo", async () => {
+		const headless = fakeHeadless();
+		const seen: Array<{ draft: string; verified: boolean }> = [];
+		const model = scriptedModel([
+			{ toolCalls: [{ toolCallId: "w1", toolName: "write_demo", input: { html: GOOD_HTML } }] },
+			{ toolCalls: [{ toolCallId: "r1", toolName: "run_demo", input: {} }] },
+			{ text: "Sweep the slider." },
+		]);
+		const result = await runDemoBuilder(
+			{ title: "T", brief: "b" },
+			{ engine: model, headless, onCheckpoint: (draft, verified) => seen.push({ draft, verified }) },
+		);
+		assert.equal(result.html, GOOD_HTML);
+		assert.deepEqual(seen, [
+			{ draft: GOOD_HTML, verified: false },
+			{ draft: GOOD_HTML, verified: true },
+		]);
+	});
+
+	it("resumes from a checkpoint: the draft is pre-loaded, the prompt says so, and run_demo tests it", async () => {
+		const headless = fakeHeadless();
+		const prompts: string[] = [];
+		const model = scriptedModel(
+			[
+				{ toolCalls: [{ toolCallId: "r1", toolName: "run_demo", input: {} }] },
+				{ text: "Resumed and verified." },
+			],
+			(ctx) => prompts.push(firstUserText(ctx)),
+		);
+		const result = await runDemoBuilder(
+			{ title: "T", brief: "b" },
+			{ engine: model, headless, resume: { draft: GOOD_HTML, verified: false } },
+		);
+		assert.equal(result.html, GOOD_HTML, "the resumed draft is delivered");
+		assert.deepEqual(headless.demoRuns, [GOOD_HTML], "run_demo tested the pre-loaded draft; the gate needed no re-run");
+		assert.match(prompts[0]!, /stopped at the hosting time limit/);
+		assert.match(prompts[0]!, /already loaded/);
+		assert.ok(prompts[0]!.includes(GOOD_HTML), "the draft rides the prompt");
+	});
+
+	it("a resumed verified draft still goes through the final verification gate", async () => {
+		const headless = fakeHeadless();
+		const model = scriptedModel([{ text: "Done." }]);
+		const result = await runDemoBuilder(
+			{ title: "T", brief: "b" },
+			{ engine: model, headless, resume: { draft: GOOD_HTML, verified: true } },
+		);
+		assert.equal(result.html, GOOD_HTML);
+		assert.deepEqual(headless.demoRuns, [GOOD_HTML], "the gate re-ran it — 'verified' never shortcuts the house rule");
+	});
 });
 
 // ─── 4. the visual-maker loop ────────────────────────────────────────────────
@@ -783,6 +856,51 @@ describe("visual maker (fake model + fake headless)", () => {
 		const result = await runVisualMaker({ brief: "b" }, { engine: scriptedModel([{ text: "x" }]), headless: noChromeHeadless() });
 		assert.equal(result.svg, "");
 		assert.match(result.notes ?? "", /^FAILED: .*Chrome/);
+	});
+
+	it("checkpoints each draft as unverified and the same draft as verified after a render", async () => {
+		const headless = fakeHeadless();
+		const seen: Array<{ draft: string; verified: boolean }> = [];
+		const edited = SVG_1.replace('<line x1="10"', '<line x1="20"');
+		const model = scriptedModel([
+			{ toolCalls: [{ toolCallId: "w1", toolName: "write_svg", input: { svg: SVG_1 } }] },
+			{ toolCalls: [{ toolCallId: "r1", toolName: "render_svg", input: {} }] },
+			{ toolCalls: [{ toolCallId: "e1", toolName: "edit_svg", input: { old_text: '<line x1="10"', new_text: '<line x1="20"' } }] },
+			{ toolCalls: [{ toolCallId: "r2", toolName: "render_svg", input: {} }] },
+			{ text: "Moved the line." },
+		]);
+		const result = await runVisualMaker(
+			{ brief: "b" },
+			{ engine: model, headless, onCheckpoint: (draft, verified) => seen.push({ draft, verified }) },
+		);
+		assert.equal(result.svg, edited);
+		assert.deepEqual(seen, [
+			{ draft: SVG_1, verified: false },
+			{ draft: SVG_1, verified: true },
+			{ draft: edited, verified: false },
+			{ draft: edited, verified: true },
+		]);
+	});
+
+	it("resumes from a checkpoint: the draft is pre-loaded, the prompt says so, and render-first delivers it", async () => {
+		const headless = fakeHeadless();
+		const prompts: string[] = [];
+		const model = scriptedModel(
+			[
+				{ toolCalls: [{ toolCallId: "r1", toolName: "render_svg", input: {} }] },
+				{ text: "Fixed the one label and finished." },
+			],
+			(ctx) => prompts.push(firstUserText(ctx)),
+		);
+		const result = await runVisualMaker(
+			{ brief: "Number line, root at 0." },
+			{ engine: model, headless, resume: { draft: SVG_1, verified: false } },
+		);
+		assert.equal(result.svg, SVG_1, "the resumed draft is delivered");
+		assert.deepEqual(headless.svgRenders, [SVG_1], "render_svg saw the pre-loaded draft");
+		assert.match(prompts[0]!, /stopped at the hosting time limit/);
+		assert.match(prompts[0]!, /already loaded/);
+		assert.ok(prompts[0]!.includes(SVG_1), "the draft rides the prompt so edit_svg old_text can match");
 	});
 });
 

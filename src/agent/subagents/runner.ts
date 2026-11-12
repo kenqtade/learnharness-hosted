@@ -33,6 +33,7 @@ import { runPdfReaderAgent } from "./pdf-reader.ts";
 import { runResearcherAgent } from "./researcher.ts";
 import { runVisualMaker } from "./visual-maker.ts";
 import { loadLearnerImage, type LearnerImage } from "../tools/learner-image.ts";
+import { LEARNER_IMAGE_HREF } from "../../core/learner-image-svg.ts";
 
 /**
  * The background job runner (contracts.ts "THE ASYNC PROTOCOL" §2–3), created
@@ -207,6 +208,18 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		return jobStore.getJob(jobId)?.status === "running";
 	}
 
+	/** Persist a maker's progress as a job checkpoint (checkpoints wave,
+	 *  2026-11). Only while THIS run still owns the record: an aborted job or
+	 *  a lease another instance took over is never written. The write is
+	 *  merged (status untouched) and intentionally unthrottled — the sniffed
+	 *  drafts are the whole point, and job writes are small and rare. */
+	function saveCheckpoint(jobId: string, draft: string, verified: boolean): void {
+		const current = jobStore.getJob(jobId);
+		if (!current || current.status !== "running") return;
+		if (leaseHeldElsewhere(current, leaseOwners.get(jobId))) return;
+		jobStore.updateJob(jobId, { checkpoint: { draft, verified, at: Date.now() } });
+	}
+
 	/** The kind→runner map: one sub-agent loop per kind. Each kind's
 	 *  runner narrows the union input itself (dispatch-time inputs are
 	 *  kind-correct by construction; transcript fallbacks are cast after). */
@@ -270,7 +283,17 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		if (attempts > jobLeaseTuning.maxAttempts) {
 			const reason = outOfTimeReason(job.attempts ?? 0);
 			console.error(`[job ${jobId}] giving up — ${reason}`);
-			jobStore.updateJob(jobId, { lease: null });
+			// The checkpoint may have been written by an attempt that was killed
+			// before its own finally ran; read the latest record. (No stale
+			// outOfTime entry can be present here: a same-process run still
+			// executing would have tripped isJobLive above.)
+			const current = jobStore.updateJob(jobId, { lease: null }) ?? job;
+			const salvaged = checkpointResult(current, input, job.attempts ?? 0);
+			if (salvaged) {
+				console.info(`[job ${jobId}] delivering the last verified checkpoint instead of failing`);
+				await finishJob(jobId, salvaged);
+				return;
+			}
 			await refuse(reason);
 			return;
 		}
@@ -306,6 +329,28 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 									pagesConsulted: [],
 								};
 			return failure;
+	}
+
+	/** The success result a give-up delivers when the record holds a VERIFIED
+	 *  checkpoint (checkpoints wave, 2026-11): the work exists and the maker
+	 *  had rendered / headlessly tested exactly that draft, so the attempt cap
+	 *  must not throw it away. null = keep the old failure path (another kind,
+	 *  no verified checkpoint, or an ANNOTATED visual: its SVG retains the
+	 *  learner-image placeholder, which only the visual maker's finish()
+	 *  resolves into a deliverable — delivering it raw would leak the
+	 *  placeholder as the picture). */
+	function checkpointResult(job: JobRecord, input: JobToolInput | undefined, attempts: number): DemoResult | VisualResult | null {
+		if (job.kind !== "demo" && job.kind !== "visual") return null;
+		const checkpoint = job.checkpoint;
+		if (!checkpoint?.verified || !checkpoint.draft) return null;
+		const notes = `Delivered the last verified draft: the job hit the hosting time limit ${attempts} times before the maker finished polishing it.`;
+		if (job.kind === "visual") {
+			if (checkpoint.draft.includes(LEARNER_IMAGE_HREF)) return null;
+			return { svg: checkpoint.draft, notes };
+		}
+		const resolved = resolveInput(job, input) as DemoToolInput | undefined;
+		const title = typeof resolved?.title === "string" && resolved.title.trim() ? resolved.title : "Interactive demo";
+		return { title, html: checkpoint.draft, tested: true, notes };
 	}
 
 	async function runClaimed(
@@ -399,7 +444,16 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 					deps.redispatch?.(jobId);
 				} else {
 					jobStore.updateJob(jobId, { lease: null });
-					await refuse(outOfTimeReason(attempts));
+					// Checkpoints wave: a verified draft IS the work. Deliver it
+					// instead of failing. (outOfTime.delete ran above, so
+					// finishJob's hand-back guard cannot swallow this result.)
+					const salvaged = checkpointResult(current ?? job, input, attempts);
+					if (salvaged) {
+						console.info(`[job ${jobId}] delivering the last verified checkpoint instead of failing`);
+						await finishJob(jobId, salvaged);
+					} else {
+						await refuse(outOfTimeReason(attempts));
+					}
 				}
 			} else if (!lost && ours) {
 				jobStore.updateJob(jobId, { lease: null });
@@ -571,6 +625,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 					engine: model,
 					abortSignal: loop.abortSignal,
 					chatId: loop.chatId,
+					resume: job.checkpoint ? { draft: job.checkpoint.draft, verified: job.checkpoint.verified } : undefined,
+					onCheckpoint: (draft, verified) => saveCheckpoint(jobId, draft, verified),
 					onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
 					onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
 				},
@@ -615,6 +671,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 					engine: model,
 					abortSignal: loop.abortSignal,
 					chatId: loop.chatId,
+					resume: job.checkpoint ? { draft: job.checkpoint.draft, verified: job.checkpoint.verified } : undefined,
+					onCheckpoint: (draft, verified) => saveCheckpoint(jobId, draft, verified),
 					onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
 					onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
 				},

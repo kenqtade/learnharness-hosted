@@ -69,7 +69,24 @@ export interface JobRecord {
 	 *  otherwise restart forever); past the cap the job fails with an honest
 	 *  "ran out of time" result delivered to the lesson. */
 	attempts?: number;
+	/** Mid-run progress snapshot (checkpoints wave, 2026-11): the maker's
+	 *  latest draft, rewritten as it works, so a run stopped at the hosting
+	 *  time limit resumes from its own work instead of starting over. When
+	 *  the attempt cap gives up, a VERIFIED checkpoint is delivered as a
+	 *  success instead of being thrown away. Absent on jobs written before
+	 *  the wave and until the maker writes its first draft. */
+	checkpoint?: JobCheckpoint;
 	plugin?: PluginJobMetadata;
+}
+
+/** One job's in-progress artifact (see JobRecord.checkpoint). `draft` is the
+ *  SVG source for visual jobs and the HTML document for demo jobs; `verified`
+ *  means the maker had rendered / headlessly tested exactly this draft, so it
+ *  is safe to deliver when the job runs out of time. `at` is epoch ms. */
+export interface JobCheckpoint {
+	draft: string;
+	verified: boolean;
+	at: number;
 }
 
 /** See JobRecord.lease. `owner` is opaque (instance + run nonce). */

@@ -18,11 +18,13 @@
 import "./helpers/isolated-data-dir.ts";
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { createFauxCore, fauxAssistantMessage, fauxText, type AssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
-import type { ResearchResult, SteerMessage } from "../src/core/contracts.ts";
+import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type AssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
+import { createCanvas } from "@napi-rs/canvas";
+import type { ResearchResult, SteerMessage, VisualResult } from "../src/core/contracts.ts";
 import { chatStore } from "../src/store/chats.ts";
 import { jobStore } from "../src/store/jobs.ts";
-import { createJobRunner, jobLeaseTuning, leaseHeldElsewhere, outOfTimeReason, researchModelOverride } from "../src/agent/subagents/runner.ts";
+import { createJobRunner, jobLeaseTuning, leaseHeldElsewhere, outOfTimeReason, researchModelOverride, visualModelOverride } from "../src/agent/subagents/runner.ts";
+import { headlessOverride, type HeadlessApi } from "../src/agent/subagents/headless.ts";
 import { isJobLive, unregisterJobAbort } from "../src/agent/subagents/aborts.ts";
 import { recoverStaleJobs, setJobRespawn } from "../src/server/jobs.ts";
 import { dispatchTarget, signEnvelope, verifyEnvelope } from "../src/server/internal-dispatch.ts";
@@ -41,6 +43,8 @@ const createdJobs: string[] = [];
 afterEach(() => {
 	Object.assign(jobLeaseTuning, defaults);
 	researchModelOverride.current = undefined;
+	visualModelOverride.current = undefined;
+	headlessOverride.current = undefined;
 	setJobRespawn(() => {});
 	for (const id of createdJobs) {
 		const job = jobStore.getJob(id);
@@ -81,6 +85,40 @@ function newResearchJob(title: string) {
 	createdJobs.push(job.id);
 	return job;
 }
+
+function newVisualJob(title: string) {
+	const chat = chatStore.createChat(`Test: ${title}`);
+	const job = jobStore.createJob({
+		kind: "visual",
+		chatId: chat.id,
+		toolCallId: `call-v-${createdJobs.length}-${Date.now()}`,
+		input: { brief: "A number line." },
+	});
+	createdJobs.push(job.id);
+	return job;
+}
+
+/** A minimal available headless API: renderSvg returns a real 1×1 PNG (the
+ *  maker's image processor decodes it) and runDemo is clean. */
+function fakeHeadless(): HeadlessApi & { svgRenders: string[] } {
+	const svgRenders: string[] = [];
+	const canvas = createCanvas(1, 1);
+	canvas.getContext("2d").fillRect(0, 0, 1, 1);
+	const png = canvas.toBuffer("image/png");
+	return {
+		svgRenders,
+		available: () => true,
+		unavailableReason: () => null,
+		runDemo: async () => ({ consoleErrors: [], pageErrors: [], failedRequests: [], ok: true }),
+		renderSvg: async (svg) => {
+			svgRenders.push(svg);
+			return png;
+		},
+		renderPdfPages: async () => [],
+	};
+}
+
+const CHECKPOINT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><circle cx="5" cy="5" r="4"/></svg>';
 
 describe("job deadline + attempts (runner)", () => {
 	it("a run that hits its budget releases the lease and asks for a fresh run — no result, no delivery", async () => {
@@ -135,6 +173,71 @@ describe("job deadline + attempts (runner)", () => {
 		assert.equal(after.status, "error");
 		assert.match((after.result as ResearchResult).brief, /ran out of time — the job was stopped at the hosting time limit 3 times/);
 		assert.equal(delivery.steers.length, 1);
+	});
+
+	it("a visual job that times out on its final attempt delivers the verified checkpoint instead of failing", async () => {
+		const job = newVisualJob("visual checkpoint salvage");
+		jobStore.updateJob(job.id, { attempts: 2, checkpoint: { draft: CHECKPOINT_SVG, verified: true, at: Date.now() } });
+		const delivery = recordingDeliver();
+		const redispatched: string[] = [];
+		visualModelOverride.current = hungEngine(10);
+		headlessOverride.current = fakeHeadless();
+		await createJobRunner({
+			chatStore,
+			jobStore,
+			deliver: delivery.deliver,
+			budgetMs: () => 80,
+			redispatch: (id) => redispatched.push(id),
+		}).runJob(job.id);
+
+		const after = jobStore.getJob(job.id)!;
+		assert.equal(after.status, "done", "the verified work is the result, not a failure");
+		assert.equal(after.attempts, 3);
+		assert.equal(redispatched.length, 0, "no fourth start");
+		const result = after.result as VisualResult;
+		assert.equal(result.svg, CHECKPOINT_SVG);
+		assert.match(result.notes ?? "", /Delivered the last verified draft.*3 times/);
+		assert.equal(delivery.steers.length, 1, "the delivered result reaches the lesson");
+		assert.equal(after.checkpoint?.draft, CHECKPOINT_SVG, "the checkpoint stays on the record");
+	});
+
+	it("an UNVERIFIED visual checkpoint still fails with the honest out-of-time result", async () => {
+		const job = newVisualJob("visual checkpoint unverified");
+		jobStore.updateJob(job.id, { attempts: 2, checkpoint: { draft: CHECKPOINT_SVG, verified: false, at: Date.now() } });
+		const delivery = recordingDeliver();
+		visualModelOverride.current = hungEngine(10);
+		headlessOverride.current = fakeHeadless();
+		await createJobRunner({ chatStore, jobStore, deliver: delivery.deliver, budgetMs: () => 80, redispatch: () => {} }).runJob(job.id);
+
+		const after = jobStore.getJob(job.id)!;
+		assert.equal(after.status, "error");
+		assert.deepEqual(after.result, { svg: "", notes: `FAILED: ${outOfTimeReason(3)}` });
+		assert.equal(delivery.steers.length, 1);
+		assert.match(delivery.steers[0]!.content, /ran out of time/);
+	});
+
+	it("a resumed visual attempt receives the checkpoint, renders it first, and finishes from it", async () => {
+		const job = newVisualJob("visual resume");
+		jobStore.updateJob(job.id, { checkpoint: { draft: CHECKPOINT_SVG, verified: false, at: Date.now() } });
+		const headless = fakeHeadless();
+		headlessOverride.current = headless;
+		const prompts: string[] = [];
+		visualModelOverride.current = fauxEngine([
+			(ctx) => {
+				prompts.push(JSON.stringify(ctx.messages));
+				return fauxAssistantMessage([fauxToolCall("render_svg", {})], { stopReason: "toolUse" });
+			},
+			fauxAssistantMessage([fauxText("The resumed number line is correct.")]),
+		] as FauxResponseStep[]);
+		await createJobRunner({ chatStore, jobStore, deliver: recordingDeliver().deliver }).runJob(job.id);
+
+		const after = jobStore.getJob(job.id)!;
+		assert.equal(after.status, "done");
+		assert.equal((after.result as VisualResult).svg, CHECKPOINT_SVG, "the resumed draft is delivered");
+		assert.deepEqual(headless.svgRenders, [CHECKPOINT_SVG], "render_svg ran on the pre-loaded draft");
+		assert.match(prompts[0]!, /hosting time limit/);
+		assert.ok(prompts[0]!.includes("circle cx"), "the checkpoint draft reached the model");
+		assert.equal(after.checkpoint?.verified, true, "the render marked the checkpoint verified");
 	});
 
 	it("usage is cumulative across attempts", async () => {

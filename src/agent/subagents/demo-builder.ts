@@ -44,6 +44,15 @@ export interface DemoBuilderOptions {
 	onUsage?: (usage: Usage) => void;
 	/** Debug: raw provider-event recording key (LH_PROVIDER_EVENTS=1). */
 	chatId?: string;
+	/** Resume from a timed-out run's checkpoint (checkpoints wave, 2026-11):
+	 *  the last draft is pre-loaded as the current document, and the prompt
+	 *  tells the model to test it first and finish quickly (the final
+	 *  verification gate re-runs it, so a stale `tested` claim is impossible). */
+	resume?: { draft: string; verified: boolean };
+	/** Persist progress as it happens (the job checkpoint): called with the
+	 *  new document whenever write_demo replaces it, and with verified=true
+	 *  only when run_demo tested exactly that document and passed. */
+	onCheckpoint?: (draft: string, verified: boolean) => void;
 }
 
 const INSTRUCTIONS = `You are a demo builder — a specialist sub-agent inside a learning application. You
@@ -100,6 +109,7 @@ export function createDemoBuilderTools(
 	state: BuilderState,
 	headless: HeadlessApi,
 	onActivity?: (line: string) => void,
+	onCheckpoint?: (draft: string, verified: boolean) => void,
 ): Record<string, AgentTool<any>> {
 	return healToolRecord({
 		write_demo: {
@@ -112,6 +122,7 @@ export function createDemoBuilderTools(
 			execute: serverExecute("write_demo", writeDemoInput, async ({ html }) => {
 				if (!html || html.trim().length === 0) return "ERROR: empty document — write the full HTML.";
 				state.html = html;
+				onCheckpoint?.(html, false);
 				onActivity?.(`write_demo: ${(html.length / 1024).toFixed(1)} KB`);
 				return `Saved (${html.length} bytes). Now call run_demo to test it — never deliver untested.`;
 			}),
@@ -125,18 +136,20 @@ export function createDemoBuilderTools(
 			parameters: runDemoInput,
 			execute: serverExecute("run_demo", runDemoInput, async ({ probe }) => {
 				if (!state.html) return "ERROR: nothing to run — call write_demo first.";
+				const html = state.html;
 				const reason = headless.unavailableReason();
 				if (reason) return `HEADLESS UNAVAILABLE: ${reason}`;
 				let result: DemoRunResult;
 				try {
-					result = await headless.runDemo(state.html, probe ? { probe } : undefined);
+					result = await headless.runDemo(html, probe ? { probe } : undefined);
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : String(err);
 					onActivity?.("run_demo: browser error");
 					return `HEADLESS ERROR (retrying may help): ${msg}`;
 				}
-				state.testedHtml = state.html;
+				state.testedHtml = html;
 				state.lastResult = result;
+				onCheckpoint?.(html, result.ok);
 				onActivity?.(
 					result.ok ? "run_demo: clean" : `run_demo: ${summarizeCounts(result)}`,
 				);
@@ -181,6 +194,23 @@ function failureSummary(result: DemoRunResult | null): string {
 	return details.length > 0 ? `${summarizeCounts(result)} — ${details.join(" | ")}` : summarizeCounts(result);
 }
 
+/** Drafts below this size ride in the resume prompt; above it the model must
+ *  test the loaded document first. */
+const RESUME_DRAFT_PROMPT_LIMIT = 12 * 1024;
+
+function resumeParagraph(resume: { draft: string; verified: boolean }): string {
+	return [
+		"RESUMING AFTER A TIME LIMIT: a previous run of this job was stopped at the hosting time limit before it finished.",
+		resume.verified
+			? "Your last draft is already loaded as the current document, and run_demo had passed it."
+			: "Your last draft is already loaded as the current document, but run_demo has not passed it yet.",
+		"Call run_demo first to check it, then fix only what is wrong and finish quickly — do not start over.",
+		resume.draft.length < RESUME_DRAFT_PROMPT_LIMIT ? `The loaded draft:\n\n${resume.draft}` : null,
+	]
+		.filter(Boolean)
+		.join("\n\n");
+}
+
 export async function runDemoBuilder(input: DemoBuilderInput, opts: DemoBuilderOptions = {}): Promise<DemoResult> {
 	const headless = opts.headless ?? getHeadless();
 	const title = input.title.trim() || "Interactive demo";
@@ -192,19 +222,26 @@ export async function runDemoBuilder(input: DemoBuilderInput, opts: DemoBuilderO
 		return { title, html: "", tested: true, notes: `FAILED: ${reason}` };
 	}
 
-	const state: BuilderState = { html: null, testedHtml: null, lastResult: null };
+	const resume = opts.resume?.draft?.trim() ? opts.resume : undefined;
+	// A resumed draft is simply the current document. `testedHtml`/`lastResult`
+	// stay empty even when the checkpoint says verified: the final verification
+	// gate then re-runs run_demo on it (the simplest correct choice — a
+	// checkpoint's "verified" only has to mean "safe to deliver on give-up",
+	// never "skip the house rule").
+	const state: BuilderState = { html: resume?.draft ?? null, testedHtml: null, lastResult: null };
 
 	const prompt = [
 		`Demo title: ${title}`,
 		`Brief (all you know about the lesson — this comes from the teacher, verbatim):`,
 		brief,
 		"",
+		...(resume ? [resumeParagraph(resume)] : []),
 		"Build the demo, test it with run_demo, iterate until PASSED, then finish with your notes.",
 	].join("\n");
 
 	let finalText = "";
 	try {
-		const result = await runSubagent(Object.values(createDemoBuilderTools(state, headless, opts.onActivity)), {
+		const result = await runSubagent(Object.values(createDemoBuilderTools(state, headless, opts.onActivity, opts.onCheckpoint)), {
 			role: "demoBuilder",
 			engine: opts.engine,
 			systemPrompt: INSTRUCTIONS,

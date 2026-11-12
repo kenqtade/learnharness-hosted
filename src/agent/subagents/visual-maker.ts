@@ -66,6 +66,15 @@ export interface VisualMakerOptions {
 	onUsage?: (usage: Usage) => void;
 	/** Debug: raw provider-event recording key (LH_PROVIDER_EVENTS=1). */
 	chatId?: string;
+	/** Resume from a timed-out run's checkpoint (checkpoints wave, 2026-11):
+	 *  the last draft is pre-loaded as the current SVG (and as the rendered
+	 *  SVG when it had already been looked at), and the prompt tells the
+	 *  model to look first and finish quickly instead of starting over. */
+	resume?: { draft: string; verified: boolean };
+	/** Persist progress as it happens (the job checkpoint): called with the
+	 *  new draft whenever write_svg / edit_svg replaces the current SVG, and
+	 *  with verified=true right after a successful render of it. */
+	onCheckpoint?: (draft: string, verified: boolean) => void;
 }
 
 const INSTRUCTIONS = `You are a visual maker — a diagram author + renderer for precise, spatial figures. You
@@ -161,6 +170,26 @@ const LOOK_MESSAGE =
 const UNLOOKED_FINISH_MESSAGE =
 	"You finished without looking at a render of your final SVG. Above is its render. If it is correct and clean, reply with just your notes; otherwise call write_svg with fixes and render again.";
 
+/** Drafts below this size ride in the resume prompt so edit_svg old_text can
+ *  match by inspection; above it the model must render first (checkpoints
+ *  wave — the prompt stays bounded on a huge SVG). */
+const RESUME_DRAFT_PROMPT_LIMIT = 12 * 1024;
+
+function resumeParagraph(resume: { draft: string; verified: boolean }): string {
+	return [
+		"RESUMING AFTER A TIME LIMIT: a previous run of this job was stopped at the hosting time limit before it finished.",
+		resume.verified
+			? "Your last draft is already loaded as the current SVG, and it was rendered for inspection."
+			: "Your last draft is already loaded as the current SVG, but it has not been rendered yet.",
+		"Call render_svg first to look at it, then fix only what is wrong and finish quickly — do not start over.",
+		resume.draft.length < RESUME_DRAFT_PROMPT_LIMIT
+			? `The loaded draft (so edit_svg old_text can match):\n\n${resume.draft}`
+			: null,
+	]
+		.filter(Boolean)
+		.join("\n\n");
+}
+
 export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerOptions = {}): Promise<VisualResult> {
 	const headless = opts.headless ?? getHeadless();
 	const brief = input.brief.trim() || "(no brief)";
@@ -181,6 +210,7 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 	const capture = createBackgroundCapture({ role: "visualMaker", runId: sessionId, sourceId: opts.chatId });
 	const streamEngine = { ...engine, streamFn: backgroundCaptureStream(workerRequestStream(engine.streamFn), capture) };
 	const learnerImage = input.image;
+	const resume = opts.resume?.draft?.trim() ? opts.resume : undefined;
 	const systemPrompt = learnerImage ? `${INSTRUCTIONS}\n\n${IMAGE_INSTRUCTIONS}` : INSTRUCTIONS;
 	const prompt = [
 		learnerImage
@@ -193,6 +223,7 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 					`The learner's image follows: ${learnerImage.width}×${learnerImage.height} px. Place it with <image href="${LEARNER_IMAGE_HREF}" … width="${learnerImage.width}" height="${learnerImage.height}"/>.`,
 				]
 			: []),
+		...(resume ? [resumeParagraph(resume)] : []),
 		"Author the SVG, render it, look at it, iterate until correct, then finish with your notes.",
 	].join("\n");
 
@@ -222,9 +253,9 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 		if (!learnerImage) return null;
 		return annotationPlacementProblem(svg, learnerImage.width, learnerImage.height);
 	};
-	let currentSvg: string | null = null;
+	let currentSvg: string | null = resume?.draft ?? null;
 	/** The svg shown in the most recent render (null = never rendered). */
-	let renderedSvg: string | null = null;
+	let renderedSvg: string | null = resume?.verified ? resume.draft : null;
 	let finalText = "";
 	let captureError: unknown;
 
@@ -270,6 +301,7 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 					if (!image.ok) return { svg: "", notes: `FAILED: inspecting the final SVG failed — ${image.message}` };
 					opts.onActivity?.("render_svg: inspecting final render");
 					renderedSvg = currentSvg;
+					opts.onCheckpoint?.(currentSvg, true);
 					messages = [
 						...messages,
 						{
@@ -301,6 +333,7 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 						continue;
 					}
 					currentSvg = svg;
+					opts.onCheckpoint?.(svg, false);
 					opts.onActivity?.(`write_svg: ${(svg.length / 1024).toFixed(1)} KB`);
 					toolResults.push(toolText(call.id, call.name, `Saved (${svg.length} bytes). Call render_svg to look at it.`));
 				} else if (call.name === "edit_svg") {
@@ -337,6 +370,7 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 						continue;
 					}
 					currentSvg = edited;
+					opts.onCheckpoint?.(edited, false);
 					opts.onActivity?.("edit_svg: applied");
 					toolResults.push(toolText(call.id, call.name, "OK — replaced 1 occurrence. Call render_svg to look at the edited SVG."));
 				} else if (call.name === "render_svg") {
@@ -351,6 +385,7 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 						if (!image.ok) throw new Error(image.message);
 						renderImage = image;
 						renderedSvg = currentSvg;
+						opts.onCheckpoint?.(currentSvg, true);
 						opts.onActivity?.("render_svg: inspecting render");
 						toolResults.push(toolText(call.id, call.name, "Rendered — the PNG follows in the next message. Look at it."));
 					} catch (err) {
