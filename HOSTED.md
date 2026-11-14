@@ -24,3 +24,5 @@ A merge that needs a human never touches production — it opens an issue instea
 
 Branches: `hosted` is the default and the deployed line. Tags are never pushed here (upstream's desktop release
 workflow must not run on this repository).
+
+Source for the hosted deployments; report hosted-only problems as issues here.
