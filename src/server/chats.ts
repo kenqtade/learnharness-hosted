@@ -7,6 +7,7 @@ import { graphRevision } from "./graph.ts";
 import { stores } from "./stores.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
 import { clearTurnFailure } from "./turn-runs.ts";
+import { clearTurn } from "../store/turn-markers.ts";
 import { discardChatDeliveries } from "./jobs.ts";
 import { sideChats } from "./side-chat.ts";
 
@@ -153,6 +154,7 @@ function finishChatRecordDeletion(chatId: string): number {
 	if (stores.chatStore.deleteChat(chatId)) {
 		discardChatDeliveries(chatId);
 		clearTurnFailure(chatId);
+		clearTurn(chatId); // the durable turn marker is the chat's own record
 		sideChats.stopAll(chatId); // a running side answer has nowhere left to land
 	}
 	return jobsRemoved;

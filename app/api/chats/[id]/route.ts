@@ -1,5 +1,5 @@
 import { withStore } from "@/src/server";
-import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode, pluginQuestionAvailabilityOf, reconcilePluginQuestionCompatibility, type QuestionTypeResolver, getPluginQuestionTypeResolver, getPluginHost, pluginProblemAvailabilityOf, type ProblemTypeResolver } from "@/src/server";
+import { compactionInFlight, deleteChatSession, getChat, isTurnRunningAnywhere, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode, pluginQuestionAvailabilityOf, reconcilePluginQuestionCompatibility, type QuestionTypeResolver, getPluginQuestionTypeResolver, getPluginHost, pluginProblemAvailabilityOf, type ProblemTypeResolver } from "@/src/server";
 import { pendingPluginQuestionOf, activeProblemOf } from "@/src/core";
 
 async function GET_handler(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -22,6 +22,9 @@ async function GET_handler(_req: Request, { params }: { params: Promise<{ id: st
 	}
 	// turnInFlight lets a returning client re-attach to a running turn
 	// (chat-handler write-ahead + registry — see src/server/turn-liveness.ts).
+	// HOSTED FORK: the registry is process memory, so a reconnect that lands
+	// on another instance must also see the DURABLE marker — a turn running
+	// anywhere counts as in flight.
 	// coverage (extraction-UX redesign, 2026-09-24): the chat view's ring
 	// meter + sidebar block — THE coverage surface (the all-sessions GET
 	// route died with the redesign; the Extract POST stays). getChat
@@ -38,7 +41,7 @@ async function GET_handler(_req: Request, { params }: { params: Promise<{ id: st
 		pluginQuestionAvailability: pluginQuestionAvailabilityOf(chat, questionResolver),
 		pluginProblemAvailability: pluginProblemAvailabilityOf(chat, problemResolver),
 		pricing: sessionCost(chat),
-		turnInFlight: isTurnRunning(id),
+		turnInFlight: await isTurnRunningAnywhere(id),
 		// Also reaches idle views that missed the failing turn's stream.
 		turnError: turnFailure(id),
 		compacting: compactionInFlight(id),

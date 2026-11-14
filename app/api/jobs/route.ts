@@ -1,5 +1,5 @@
 import { withStore } from "@/src/server";
-import { isTurnRunning, listJobs } from "@/src/server";
+import { isTurnRunningAnywhere, listJobs } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 // Background work (turns, jobs, deliveries) runs under waitUntil in this
@@ -13,7 +13,9 @@ export const maxDuration = 300;
  * on channel resync (push-architecture S4, 2026-10-02 — the old interval
  * poll is retired). It drives the dispatch cards, the sub-agents panel,
  * and the re-sync when a job settles. `turnInFlight` rides along for the
- * settle logic's idle check.
+ * settle logic's idle check — HOSTED FORK: it counts a turn running on
+ * ANOTHER instance too (the durable marker), because the learner's browser
+ * may land on an instance that never saw the turn start.
  */
 async function GET_handler(req: Request) {
 	const chatId = new URL(req.url).searchParams.get("chatId");
@@ -23,7 +25,7 @@ async function GET_handler(req: Request) {
 	if (!/^[A-Za-z0-9_-]+$/.test(chatId)) {
 		return Response.json({ error: "Invalid chatId" }, { status: 400 });
 	}
-	return Response.json({ jobs: listJobs(chatId), turnInFlight: isTurnRunning(chatId) });
+	return Response.json({ jobs: listJobs(chatId), turnInFlight: await isTurnRunningAnywhere(chatId) });
 }
 
 // convex-store: refresh before, save to Convex before replying (src/server/store-ready.ts)

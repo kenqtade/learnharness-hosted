@@ -61,6 +61,7 @@ import {
 } from "../core/settings-resolution.ts";
 import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope, ROLE_SLOT, type ModelSlotName, type ProviderKeyMissing } from "../core/settings.ts";
 import { beginTurn, endTurn, isTurnRunning } from "./turn-liveness.ts";
+import { markTurn } from "../store/turn-markers.ts";
 import { claimPreparingTurn, type TurnPreparation } from "./turn-preparation.ts";
 import { applyParkedDismissal } from "./dismissal-park.ts";
 import { sideConversationEntries } from "../core/side-chat.ts";
@@ -1228,6 +1229,15 @@ export async function handleChatInput(
 				if (turnDeadlineTimer) clearTimeout(turnDeadlineTimer);
 				if (preparation && !preparation.isCurrent()) return;
 				const continuing = turnDeadlineHit && turnHop < turnContinuations;
+				// THE DURABLE MARKER (hosted fork): this turn hands over to a
+				// continuation that runs in a FRESH invocation, so the chat is
+				// still busy after this run ends. The marker is written BEFORE
+				// endTurn runs — the ending turn keeps a continuing marker, and
+				// the continuation's own beginTurn takes it over.
+				if (continuing) {
+					try { markTurn(chatId, { continuing: true, hop: turnHop + 1 }); }
+					catch (err) { console.error(`[chat ${chatId}] turn marker write failed:`, err); }
+				}
 				const turnMessages = turnDeadlineHit
 					? markTurnOutOfTime(rawTurnMessages, persistBaseCount, turnBudget ?? 0, continuing ? continuingTurnText(turnBudget ?? 0, turnHop, turnContinuations) : undefined)
 					: rawTurnMessages;
