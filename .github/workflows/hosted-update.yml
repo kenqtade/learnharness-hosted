@@ -146,6 +146,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install (the Convex CLI bundles convex/ against the project's own packages)
+        run: npm ci --no-audit --no-fund --ignore-scripts || npm install --no-audit --no-fund --ignore-scripts
       - name: Deploy to staging
         run: bash scripts/ci/deploy.sh staging
       - name: Smoke-test staging
