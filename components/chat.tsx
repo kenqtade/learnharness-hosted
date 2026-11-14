@@ -12,7 +12,7 @@ import { findSurfaceBoundary } from "./plugin-surface-targets";
 import { scheduleOpeningSubmission } from "./plugin-submission-opening";
 import { activeProblemOccurrenceOf, buildAnswer, toClientQuestion, type PluginSubmission, type PluginSubmissionTarget, type QuestionData } from "@/src/core";
 import { validatePluginBuiltinSubmissionAnswer } from "@/src/core";
-import { visibleQueuedSteers } from "@/components/session-core";
+import { visibleQueuedSteers, type SessionRecordSnapshot } from "@/components/session-core";
 import { SetupDialog } from "@/components/setup-dialog";
 import { Hint } from "@/components/ui/hint";
 import { cn } from "@/lib/utils";
@@ -58,6 +58,15 @@ import {
 	sideSegmentId,
 	textPartMessageId,
 	kbdEventForAction as kbdEventForChat,
+	// THE MULTI-INSTANCE TURN (reliability wave, 2026-11): the continuing
+	// notice is not a failure, and the remote-turn watch's decisions.
+	continuingNoticeStatus,
+	CONTINUATION_LOST_TEXT,
+	decideRemoteTurn,
+	decideTabReturn,
+	failedResponseAtEnd,
+	isContinuingNotice,
+	REMOTE_TURN_POLL_MS,
 	type ChatInput,
 	type ChatSettings,
 	type LhMessage,
@@ -124,6 +133,7 @@ import {
 } from "@/src/core";
 import { ReadingThinkingField } from "@/components/reading-thinking";
 import { currentUserThinkingOpen, setAllUserThinkingOpen } from "@/components/thinking-block";
+import { setTurnBusy } from "@/components/turn-busy";
 
 /** One width for everything: transcript, cards, and the bottom blob share this column. */
 /**
@@ -581,9 +591,20 @@ export function Chat({
 	activeProblemRef.current = activeProblem;
 
 	const localStream = status === "submitted" || status === "streaming";
+	// The live-stream flag as the EVENT handlers read it (they fire between
+	// renders — a closure would be stale).
+	const localStreamRef = useRef(false);
+	localStreamRef.current = localStream;
 	const busy = localStream || turnInFlight || reconciliation !== "ready";
 	const busyRef = useRef(busy);
 	busyRef.current = busy;
+	// THE SHARED BUSY LEDGER (reliability wave, 2026-11): the hosted refresh
+	// banner must never auto-reload a hidden tab while a turn is in flight —
+	// the reload would drop this window's only attachment to that turn.
+	useEffect(() => {
+		setTurnBusy(chatId, busy);
+		return () => setTurnBusy(chatId, false);
+	}, [chatId, busy]);
 	// The attach handoff (stream-reattach wave): the moment a resumed
 	// stream takes over the rendering — the SDK left "ready", so
 	// submitted/streaming means chunks are flowing — localStream covers
@@ -1106,6 +1127,16 @@ export function Chat({
 	// recovers from it. Later compaction requires new input instead.
 	const retryable = !pluginOwnsDock && (status === "ready" || status === "error") && !busy && !compacting && endsInFailedTurn(nativeMessages);
 	const retryFailedTurn = () => retryFailedResponse(send, draftRef);
+	// THE CONTINUING NOTICE (reliability wave, 2026-11): the server's
+	// deadline-pause notice is NOT a failure — the turn was paused and
+	// continues automatically in a fresh server run. It renders as a NEUTRAL
+	// status line (never the red failed-reply styling, no Retry), and it
+	// never puts the session into the error state (the model derives its
+	// error from the same message — components/session-core.ts).
+	const continuingNotice = useMemo(() => {
+		const text = failedResponseAtEnd(nativeMessages)?.errorMessage;
+		return isContinuingNotice(text) ? text : undefined;
+	}, [nativeMessages]);
 	const sendAllowed = !pluginOwnsDock && reconciliation === "ready" && !pending && !activeProblem && !compacting && !submissionRunner.occupied;
 	const pendingTextTarget = textTarget();
 	const pendingTextInput = !!pendingTextTarget && !!pluginManager?.hasPendingSubmissionInput(pendingTextTarget);
@@ -1144,11 +1175,21 @@ export function Chat({
 	 * when nothing is active; the two never overlap). */
 	useEnterSubmits(sendNext, sessionFindScopeRef);
 
-	const syncFromServer = useCallback(async () => {
-		const record = await readRecord().catch(() => undefined);
-		if (!record) return;
+	// ONE RECORD READING, ADOPTED (the sync seam). The record carries the
+	// liveness truth with it: turnInFlight === true means the chat's turn —
+	// or its pending continuation — runs SOMEWHERE (this instance or
+	// another). While it does, this view stays busy and the remote-turn
+	// watch keeps re-reading the record; when it is gone, the busy state
+	// ends with it. (A turn running ANYWHERE also owns the record: no
+	// continuation is started while it runs — the server would refuse it.)
+	const adoptRecordReading = useCallback((record: SessionRecordSnapshot) => {
 		if (Array.isArray(record.turns)) setTurns(record.turns);
 		setPricing(record.pricing);
+		if (record.turnInFlight === true) {
+			setTurnInFlight(true);
+			return;
+		}
+		setTurnInFlight(false);
 		// The continuation seam (contracts.ts protocol §4): a job result
 		// landing in the record leaves the agent owing a continuation — the
 		// record ENDS on un-consumed results, the dock owns no question, and
@@ -1157,17 +1198,119 @@ export function Chat({
 		// Current model truth also guards retained/live failures: canonical
 		// sync must never automatically replace a reply that failed to save.
 		continueIfOwed(record.messages);
-	}, [readRecord, continueIfOwed]);
+	}, [continueIfOwed]);
+
+	const syncFromServer = useCallback(async () => {
+		const record = await readRecord().catch(() => undefined);
+		if (!record) return;
+		adoptRecordReading(record);
+	}, [readRecord, adoptRecordReading]);
 
 	// The settled terminal's other half (stream-reattach wave): the
-	// transport resolved turn-settled — no turn running, the record is
-	// current. Drop the fallback busy state and adopt the record (its
-	// continuation check fires the owed next turn, exactly as the poll's
-	// settle branch always did).
+	// transport resolved turn-settled. The stream's end is NOT the truth:
+	// the turn may continue in a FRESH run on another instance (a
+	// deadline-paused turn), so the record decides whether this view stays
+	// busy. When it is over, the record is adopted (its continuation check
+	// fires the owed next turn, exactly as the poll's settle branch always
+	// did).
 	reattachSettledRef.current = () => {
-		setTurnInFlight(false);
-		void syncFromServer();
+		void (async () => {
+			const record = await readRecord().catch(() => undefined);
+			if (!record) {
+				setTurnInFlight(false);
+				void syncFromServer();
+				return;
+			}
+			adoptRecordReading(record);
+		})();
 	};
+
+	// ── THE REMOTE-TURN WATCH (reliability wave, 2026-11) ──
+	// A turn that runs on ANOTHER server instance is invisible to the
+	// in-process events channel: no turn-started / turn-settled frame ever
+	// arrives, and the reattach stream answers "turn-settled" at once. The
+	// RECORD is the only truth: turnInFlight === true means the chat's turn
+	// — or its pending continuation — runs SOMEWHERE. This watch keeps the
+	// session busy and re-reads the record every 4 s while the document is
+	// visible (a hidden tab never polls — the tab-return handler reads the
+	// record once instead). When the turn is gone, the busy state and the
+	// stale error end and the record is adopted.
+	useEffect(() => {
+		if (!turnInFlight) return;   // nothing runs that we know of
+		if (localStream) return;     // our own (or the attached) stream owns the view
+		let cancelled = false;
+		const tick = async () => {
+			if (cancelled) return;
+			// Paused while the document is hidden: a background tab must not
+			// poll — the tab-return handler reads the record once instead.
+			// (Only an EXPLICIT hidden state pauses: an environment without
+			// the API is treated as visible — the harmless default.)
+			if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+			const record = await readRecord({ adoption: "none", isCurrent: () => !cancelled }).catch(() => undefined);
+			if (cancelled || !record) return;   // transient — the next tick retries
+			const decision = decideRemoteTurn({ turnInFlight: record.turnInFlight, localStream: localStreamRef.current });
+			if (decision === "hold" || decision === "watch") return;   // still running somewhere
+			// The turn is gone: leave the busy state, drop the stale error
+			// banner, and adopt the record — the reply that finished while
+			// this view waited appears.
+			setTurnInFlight(false);
+			clearError();
+			void syncFromServer();
+		};
+		const timer = setInterval(() => { void tick(); }, REMOTE_TURN_POLL_MS);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	}, [chatId, turnInFlight, localStream, readRecord, clearError, syncFromServer]);
+
+	// ── TAB RETURN (reliability wave, 2026-11) ──
+	// A tab that was away (another tab took over, a phone slept) misses
+	// the events channel AND the reattach stream: a turn that finished while
+	// the tab was away must still appear, and a turn that still runs must
+	// still be waited for. Every return reads the record ONCE and decides.
+	useEffect(() => {
+		let cancelled = false;
+		const onReturn = () => {
+			// Only an EXPLICIT hidden state is a departure: an environment
+			// without the visibility API is treated as visible (the harmless
+			// default).
+			if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+			if (localStreamRef.current) return;   // our own stream owns the view
+			void (async () => {
+				const record = await readRecord({ adoption: "none", isCurrent: () => !cancelled }).catch(() => undefined);
+				if (cancelled || !record) return;   // transient — the next return reads again
+				const decision = decideTabReturn({ turnInFlight: record.turnInFlight, localStream: localStreamRef.current });
+				if (decision === "hold") return;
+				if (decision === "attach") {
+					// A turn runs (maybe on another instance): attach to it
+					// for live rendering, and keep the busy state meanwhile.
+					setTurnInFlight(true);
+					attachToRunningTurn();
+					return;
+				}
+				// The turn is over: adopt the record — a reply that finished
+				// while the tab was away appears, and a stale banner (the
+				// saved notice of a turn that DID finish) clears with it.
+				setTurnInFlight(false);
+				clearError();
+				void syncFromServer();
+			})();
+		};
+		// A mobile bfcache restore fires pageshow (persisted), not
+		// visibilitychange — same read, same decision.
+		const onPageShow = (event: Event) => {
+			if (!(event as PageTransitionEvent).persisted) return;
+			onReturn();
+		};
+		document.addEventListener("visibilitychange", onReturn);
+		window.addEventListener("pageshow", onPageShow);
+		return () => {
+			cancelled = true;
+			document.removeEventListener("visibilitychange", onReturn);
+			window.removeEventListener("pageshow", onPageShow);
+		};
+	}, [chatId, readRecord, clearError, syncFromServer, attachToRunningTurn]);
 
 	// ── Append-only record adoption (owner ground rules, 2026-09-15) ──
 	// Content delivered into the record server-side — sub-agent
@@ -1291,6 +1434,12 @@ export function Chat({
 			if (!record) return;
 			if (Array.isArray(record.turns)) setTurns(record.turns);
 			setPricing(record.pricing);
+			// THE MOUNT DISCOVERY (reliability wave, 2026-11): the page's
+			// initiallyInFlight is the SERVER INSTANCE's own registry — a turn
+			// running elsewhere is invisible to it. The record is the truth:
+			// turnInFlight === true means a turn runs SOMEWHERE, so this view
+			// stays busy and the remote-turn watch takes over from here.
+			if (record.turnInFlight === true && !localStreamRef.current) setTurnInFlight(true);
 		} catch {
 			// transient blip: stats stay on the last known figures
 		}
@@ -1345,9 +1494,10 @@ export function Chat({
 
 	// A stream that died MID-FLIGHT (network): the runner decoupled the turn
 	// from its view, so the server turn runs ON behind the error banner —
-	// re-enter the in-flight watch (the 1500ms fallback poll adopts at
-	// settle) instead of leaving the session blind until the next send's
-	// 409 merge-retry heals it. One record check per error transition.
+	// re-enter the in-flight watch (the remote-turn watch polls the record
+	// until the turn is gone) instead of leaving the session blind until the
+	// next send's 409 merge-retry heals it. One record check per error
+	// transition.
 	const prevErrorStatusRef = useRef(status);
 	useEffect(() => {
 		const was = prevErrorStatusRef.current;
@@ -1358,6 +1508,8 @@ export function Chat({
 			try {
 				const record = await readRecord({ adoption: "none", isCurrent: () => !cancelled });
 				if (!record) return;
+				// A turn still runs SOMEWHERE (this instance or another): stay
+				// busy and let the remote-turn watch wait for it to be gone.
 				if (record.turnInFlight === true) setTurnInFlight(true);
 				else void syncFromServer();
 			} catch {
@@ -1387,8 +1539,6 @@ export function Chat({
 	// (duplicate message ids). So: a settle during a busy turn defers the
 	// sync; the next idle fetch adopts the finished record.
 	const [jobs, setJobs] = useState<JobRecord[]>([]);
-	const localStreamRef = useRef(false);
-	localStreamRef.current = localStream;
 	const jobStatusRef = useRef<Map<string, string>>(new Map());
 	// A settle seen during a busy turn — the sync is owed, not dropped.
 	const pendingSyncRef = useRef(false);
@@ -1410,6 +1560,11 @@ export function Chat({
 			if (!res.ok) return;
 			const data = (await res.json()) as { jobs?: JobRecord[]; turnInFlight?: boolean };
 			const list = data.jobs ?? [];
+			// THE LIVENESS TRUTH rides along (reliability wave, 2026-11): a
+			// turn running on ANY instance keeps this view busy — the events
+			// channel never fires for another instance, so this reading (and
+			// the remote-turn watch it starts) is the discovery path.
+			if (data.turnInFlight === true && !localStreamRef.current) setTurnInFlight(true);
 			for (const j of list) {
 				const prev = jobStatusRef.current.get(j.id);
 				if (prev === "running" && j.status !== "running") {
@@ -1516,15 +1671,18 @@ export function Chat({
 			// syncing HERE would swap a stale snapshot mid-stream (the
 			// continuation-coalescing law, see the jobs poll above). Only
 			// the error case heals: the attached stream died, and the settle
-			// says persistTurn has made the record durable truth.
+			// says persistTurn has made the record durable truth. The record
+			// decides whether a turn still runs (a continuation on another
+			// instance) — the busy state follows it, never the other way.
 			if (statusRef.current === "error") {
-				setTurnInFlight(false);
 				clearError();
 				void syncFromServer();
 			}
 			return;
 		}
 		// Fully idle — a turn we never saw (every window missed): adopt now.
+		// The record's liveness truth rides along: a turn running on another
+		// instance keeps this view busy (the remote-turn watch takes over).
 		void syncFromServer();
 	});
 	useServerEvent("compaction-changed", (p) => {
@@ -2006,6 +2164,29 @@ export function Chat({
 								<PendingTurnIndicator evaluating={evaluating} />
 							)}
 							{openingError && <p role="alert" className="text-sm text-destructive">{OPENING_PROMPT_FAILURE}</p>}
+							{/* THE CONTINUING NOTICE (reliability wave, 2026-11): a
+							    NEUTRAL status line — the turn was paused at its
+							    deadline and continues in a fresh server run. It is
+							    not a failed reply: no red styling, no Retry. The
+							    remote-turn watch keeps the session busy until the
+							    continuation lands. */}
+							{continuingNotice && (
+								<div
+									data-testid="continuing-notice"
+									role="status"
+									className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+								>
+									{/* While a turn runs (anywhere) it is a status; once
+									    nothing runs, the continuation never came — say so
+									    plainly and offer Retry (never "still working" forever). */}
+									<span>{busy ? continuingNoticeStatus(continuingNotice) : CONTINUATION_LOST_TEXT}</span>
+									{!busy && retryable && (
+										<Button variant="outline" size="xs" data-testid="retry-failed-turn" onClick={retryFailedTurn}>
+											Retry
+										</Button>
+									)}
+								</div>
+							)}
 							{error && (
 								<div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm">
 									<span>Something went wrong: {error.message}</span>
