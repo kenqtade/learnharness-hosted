@@ -177,6 +177,8 @@ jobs:
           SMOKE_URL: ${{ secrets.PRODUCTION_URL }}
           SMOKE_USER: ${{ secrets.PRODUCTION_OWNER_USER || 'owner' }}
           SMOKE_PASSWORD: ${{ secrets.PRODUCTION_OWNER_PASSWORD }}
+          # Repo variable PRODUCTION_OPEN=1 when prod runs WITHOUT sign-in (LH_MULTI_USER unset)
+          SMOKE_OPEN: ${{ vars.PRODUCTION_OPEN || '0' }}
         run: python3 scripts/ci/smoke.py
       - name: Roll back production to the last good hosted commit
         if: failure() && steps.prod.outcome != 'skipped' && needs.merge.outputs.branch != ''

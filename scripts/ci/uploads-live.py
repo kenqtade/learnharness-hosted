@@ -11,7 +11,8 @@ import json, os, sys, urllib.request, urllib.error, http.cookiejar
 
 URL = os.environ["SMOKE_URL"].rstrip("/")
 USER = os.environ.get("SMOKE_USER", "owner")
-PW = os.environ["SMOKE_PASSWORD"]
+OPEN = os.environ.get("SMOKE_OPEN") == "1"  # deployment without sign-in
+PW = os.environ.get("SMOKE_PASSWORD", "")
 jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 anon = urllib.request.build_opener()
@@ -57,12 +58,13 @@ def upload(name, content, ctype):
 
 
 print(f"== uploads on {URL}")
-code, d = req("POST", "/api/auth/login", {"username": USER, "password": PW})
-check("login", code == 200, f"{code} {d}")
-code, _ = req("GET", "/api/files", o=anon)
-check("anonymous GET /api/files refused", code == 401, code)
-code, _ = req("POST", "/api/files", {"action": "upload-url"}, o=anon)
-check("anonymous upload-url refused", code == 401, code)
+if not OPEN:
+    code, d = req("POST", "/api/auth/login", {"username": USER, "password": PW})
+    check("login", code == 200, f"{code} {d}")
+    code, _ = req("GET", "/api/files", o=anon)
+    check("anonymous GET /api/files refused", code == 401, code)
+    code, _ = req("POST", "/api/files", {"action": "upload-url"}, o=anon)
+    check("anonymous upload-url refused", code == 401, code)
 code, d = req("GET", "/api/files")
 check("uploads are enabled", code == 200 and d.get("enabled") is True, f"{code} {d}")
 before = {f["id"] for f in d.get("files", [])} if isinstance(d, dict) else set()

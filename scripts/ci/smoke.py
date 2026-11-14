@@ -23,8 +23,11 @@ URL = os.environ.get("SMOKE_URL", "").rstrip("/")
 USER = os.environ.get("SMOKE_USER", "owner")
 PASSWORD = os.environ.get("SMOKE_PASSWORD", "")
 EXPECT_VERSION = os.environ.get("SMOKE_EXPECT_VERSION", "")  # e.g. "0.6.1" — optional
-if not URL or not PASSWORD:
-    sys.exit("set SMOKE_URL and SMOKE_PASSWORD (and SMOKE_USER if not 'owner')")
+# SMOKE_OPEN=1: a deployment WITHOUT sign-in (single-user, LH_MULTI_USER unset).
+# Then anonymous callers must be SERVED, and no login happens.
+OPEN = os.environ.get("SMOKE_OPEN") == "1"
+if not URL or (not PASSWORD and not OPEN):
+    sys.exit("set SMOKE_URL and SMOKE_PASSWORD (and SMOKE_USER if not 'owner'), or SMOKE_OPEN=1")
 
 results = []
 
@@ -63,18 +66,24 @@ check("deployment answers /api/version", c == 200 and isinstance(d, dict) and d.
 if EXPECT_VERSION:
     check(f"runs version {EXPECT_VERSION}", isinstance(d, dict) and d.get("version") == EXPECT_VERSION, d)
 
-# 2. The sign-in gate holds for anonymous callers
-for path in ("/api/chats", "/api/settings", "/api/keys", "/api/jobs"):
-    c, _ = req(anon, "GET", path)
-    check(f"anonymous GET {path} is refused", c == 401, c)
-c, _ = req(anon, "POST", "/api/chat", {"chatId": "smoke", "input": {"type": "continue"}})
-check("anonymous POST /api/chat is refused", c == 401, c)
+if OPEN:
+    # 2-3. Open deployment: no sign-in gate, anonymous callers are the owner
+    me = anon
+    c, _ = req(anon, "GET", "/api/chats")
+    check("open deployment serves anonymous callers", c == 200, c)
+else:
+    # 2. The sign-in gate holds for anonymous callers
+    for path in ("/api/chats", "/api/settings", "/api/keys", "/api/jobs"):
+        c, _ = req(anon, "GET", path)
+        check(f"anonymous GET {path} is refused", c == 401, c)
+    c, _ = req(anon, "POST", "/api/chat", {"chatId": "smoke", "input": {"type": "continue"}})
+    check("anonymous POST /api/chat is refused", c == 401, c)
 
-# 3. Sign in
-c, d = req(me, "POST", "/api/auth/login", {"username": USER, "password": PASSWORD})
-check("sign in", c == 200, f"{c} {d}")
-c, d = req(me, "GET", "/api/auth/me")
-check("session is recognised", c == 200 and isinstance(d, dict) and (d.get("user") or {}).get("username"), d)
+    # 3. Sign in
+    c, d = req(me, "POST", "/api/auth/login", {"username": USER, "password": PASSWORD})
+    check("sign in", c == 200, f"{c} {d}")
+    c, d = req(me, "GET", "/api/auth/me")
+    check("session is recognised", c == 200 and isinstance(d, dict) and (d.get("user") or {}).get("username"), d)
 
 # 4. Core API answers for a signed-in user
 for path in ("/api/chats", "/api/settings", "/api/models", "/api/keys", "/api/graph/status", "/api/update"):
