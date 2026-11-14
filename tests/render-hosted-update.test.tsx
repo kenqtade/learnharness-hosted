@@ -16,6 +16,7 @@ Object.assign(globalThis, { window: dom.window, document: dom.document, CustomEv
 const { UpdateSettings, hostedStatusText, HOSTED_OFF_OWNER, HOSTED_OFF_MEMBER } = await import("../components/settings/update-settings.tsx");
 const { default: DeployRefreshBanner, isNewerBuild, hasUnsentText } = await import("../components/deploy-refresh-banner.tsx");
 const { fetchMe } = await import("../components/account/use-me.ts");
+const { setTurnBusy, anyTurnBusy } = await import("../components/turn-busy.ts");
 
 const originalFetch = globalThis.fetch;
 const roots: { root: Root; host: HTMLElement }[] = [];
@@ -135,5 +136,32 @@ describe("refresh banner", () => {
 		assert.equal(hasUnsentText(d as unknown as Document), false);
 		(d.querySelector("textarea") as unknown as HTMLTextAreaElement).value = "half a question";
 		assert.equal(hasUnsentText(d as unknown as Document), true);
+	});
+	it("a hidden tab with a turn in flight never reloads itself (the busy ledger)", async () => {
+		// THE REFRESH MUST NEVER KILL A TURN (reliability wave, 2026-11): a
+		// background tab reloads itself when a newer build is live — but not
+		// while a turn is in flight: the reload would drop the window's only
+		// attachment to that turn.
+		const savedVisibility = Object.getOwnPropertyDescriptor(dom.document, "visibilityState");
+		const savedLocation = Object.getOwnPropertyDescriptor(dom.window, "location");
+		let reloads = 0;
+		Object.defineProperty(dom.document, "visibilityState", { configurable: true, get: () => "hidden" });
+		Object.defineProperty(dom.window, "location", { configurable: true, value: { reload: () => { reloads++; } } });
+		try {
+			setTurnBusy("chat-1", true);
+			assert.equal(anyTurnBusy(), true, "the ledger knows the turn is running");
+			serve("member", UP, { version: "0.5.1", buildId: "build-B" });
+			await mount(<DeployRefreshBanner />);
+			assert.equal(reloads, 0, "a hidden tab with a turn in flight never reloads itself");
+			// The turn ends: the next visibilitychange re-checks the ledger.
+			setTurnBusy("chat-1", false);
+			assert.equal(anyTurnBusy(), false);
+			await act(async () => { dom.document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+			assert.equal(reloads, 1, "the reload happens once the turn is gone");
+		} finally {
+			setTurnBusy("chat-1", false);
+			if (savedVisibility) Object.defineProperty(dom.document, "visibilityState", savedVisibility);
+			if (savedLocation) Object.defineProperty(dom.window, "location", savedLocation);
+		}
 	});
 });

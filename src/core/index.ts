@@ -47,6 +47,11 @@ export * from "./native-messages.ts";
 export { copyImmutableData } from "./immutable-data.ts";
 export * from "./compaction.ts";
 export * from "./input-events.ts";
+// turn-notices.ts / turn-watch.ts (reliability wave, 2026-11): the client
+// half of the multi-instance turn — the deadline-pause notice is NOT a
+// failure, and the remote-turn watch's decisions. Pure, browser-safe.
+export * from "./turn-notices.ts";
+export * from "./turn-watch.ts";
 export { parseFilePaths, quoteFilePath, filePathLabel, isDirectoryReference, directoryReferencePath } from "./file-paths.ts";
 export type { FilePathPart } from "./file-paths.ts";
 export * from "./citations.ts";

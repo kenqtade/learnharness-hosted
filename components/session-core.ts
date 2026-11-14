@@ -21,6 +21,7 @@ import {
 	activeProblemOccurrenceOf,
 	pendingQuestionOf,
 	failedResponseAtEnd,
+	isContinuingNotice,
 	measuredContextTokens,
 	newAnswerResult,
 	newNextMessage,
@@ -373,9 +374,15 @@ export class SessionModel {
 		// Presentation/compaction markers do not resolve a failure. While
 		// trying again, hide the old banner from the first Thinking frame,
 		// but show a new completed failure from this consume immediately.
+		// THE CONTINUING NOTICE (reliability wave, 2026-11) is NOT a
+		// failure: the turn was paused at its deadline and continues
+		// automatically in a fresh server run. It must never put the session
+		// into the error state (the red failed-reply banner) — the chat view
+		// renders it as a neutral status line instead.
 		const providerError =
 			latest !== undefined &&
-			!this.incompleteUsageIds.has(latest.id) && (!live || latest.id === this.liveFailureId)
+			!this.incompleteUsageIds.has(latest.id) && (!live || latest.id === this.liveFailureId) &&
+			!isContinuingNotice(latest.errorMessage)
 				? { message: latest.errorMessage ?? "An error occurred." }
 				: null;
 		return {

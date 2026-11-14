@@ -11,13 +11,15 @@
  *   most every 30 s), so a returning user sees it right away.
  * - A tab that is in the BACKGROUND with nothing typed into it reloads
  *   itself, so it is already current when the user comes back. A visible
- *   tab or one holding unsent text is never reloaded under the user.
+ *   tab, one holding unsent text, or one with a TURN IN FLIGHT
+ *   (components/turn-busy.ts) is never reloaded under the user.
  * - Desktop (window.lh) has its own updater banner; local builds bake
  *   "dev" and never poll.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCwIcon, XIcon } from "lucide-react";
+import { anyTurnBusy } from "./turn-busy";
 
 export const CLIENT_BUILD_ID = process.env.LH_BUILD_ID ?? "dev";
 const POLL_MS = 5 * 60_000;
@@ -80,7 +82,12 @@ export default function DeployRefreshBanner() {
 	useEffect(() => {
 		if (!live) return;
 		const maybeReload = () => {
-			if (document.visibilityState === "hidden" && !hasUnsentText()) window.location.reload();
+			// NEVER reload a hidden tab while a turn is in flight (the shared
+			// busy ledger): the reload would drop this window's only
+			// attachment to that turn. The ledger is re-read on EVERY
+			// visibilitychange — the check is never cached, so the reload
+			// happens on the next return once the turn is gone.
+			if (document.visibilityState === "hidden" && !hasUnsentText() && !anyTurnBusy()) window.location.reload();
 		};
 		maybeReload();
 		document.addEventListener("visibilitychange", maybeReload);
