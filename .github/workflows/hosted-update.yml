@@ -80,6 +80,10 @@ jobs:
           branch="update/$tag"
           git checkout -B "$branch"
           rm -f .lock-regenerated
+          # The hosted repo keeps ITS OWN .github: upstream's CI/release
+          # workflows don't apply here, and the Actions token may not push
+          # workflow-file changes anyway (that would fail the push below).
+          git checkout HEAD -- .github && git clean -fdq -- .github
           git add -A
           git commit -qm "merge upstream $tag into the hosted line (hosted-update)"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
