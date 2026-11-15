@@ -23,7 +23,7 @@ export const INSTRUCTIONS: Record<Family, string> = {
   technicalDiagrams: [
     "For static technical diagrams, use a tikz fenced code block containing one self-contained TeX document. These blocks support physics/free-body diagrams, geometry, circuit schematics (not simulation), commutative diagrams, and analytic function plots.",
     "Every block is compiled independently. Put all required package and library declarations before \\begin{document}, then the diagram, then \\end{document}. The engine supplies the standalone document class: never include \\documentclass or \\documentstyle, and never rely on declarations from another block.",
-    "Explicitly load the packages required by the diagram: \\usepackage{tikz}, \\usepackage{circuitikz}, \\usepackage{tikz-cd}, or \\usepackage{pgfplots}. For labels using \\text{...} or aligned equations, also load \\usepackage{amsmath}. Declare needed TikZ libraries with \\usetikzlibrary in the preamble.",
+    "Use a pgfplots axis only around \\addplot function or data plots; draw free-body, geometry and other diagrams with plain \\draw/\\node commands directly in the tikzpicture. Explicitly load the packages required by the diagram: \\usepackage{tikz}, \\usepackage{circuitikz}, \\usepackage{tikz-cd}, or \\usepackage{pgfplots}. For labels using \\text{...} or aligned equations, also load \\usepackage{amsmath}. Declare needed TikZ libraries with \\usetikzlibrary in the preamble.",
     "Place the tikzpicture, circuitikz, or tikzcd environment directly inside document. Do not wrap the diagram in \\[...\\], $$...$$, or an equation environment. Use $...$ for math in TikZ node labels; tikzcd cells already use math mode.",
     "The bundled PGFPlots version is 1.16. For plots, put \\pgfplotsset{compat=1.16} in the preamble; do not request 1.18 or another newer version.",
     "Write explanations outside the block. Author notation, not raw SVG, JavaScript, or external resources.",
@@ -77,6 +77,11 @@ export function checkSvgSize(svg: string): void {
  *  - adds `\usepackage{…}` for the environments/commands the body uses
  *  - wraps the body in `\begin{document}…\end{document}` when missing */
 export function normalizeTikz(source: string): string {
+  // HOSTED FORK (2026-11): models wrap plain \draw diagrams in a pgfplots axis
+  // with no \addplot; pgfplots then has no limits and the picture renders empty.
+  // Such an axis is only a wrapper — drop it so TikZ draws in ordinary units.
+  source = source.replace(/[ \t]*\\begin\{axis\}(?:\[[^\]]*\])?[ \t]*\r?\n?([\s\S]*?)[ \t]*\\end\{axis\}[ \t]*\r?\n?/g,
+    (whole, body: string) => /\\addplot|\\addlegendentry|\bcoordinates\b/.test(body) ? whole : body);
   let text = source.replace(/^[ \t]*\\document(?:class|style)(?:\[[^\]]*\])?\{[^}]*\}[ \t]*\r?\n?/gm, "");
   const hasDocument = /\\begin\{document\}/.test(text);
   const needs: [string, RegExp][] = [

@@ -57,3 +57,14 @@ test("normalizeTikz keeps the model's preamble lines, drops \\documentclass, lea
   const missingPkg = normalizeTikz("\\begin{document}\\begin{tikzpicture}\\end{tikzpicture}\\end{document}");
   assert.match(missingPkg, /^\\usepackage\{tikz\}\n\\begin\{document\}/);
 });
+
+// HOSTED FORK: live chat 2026-11-15 — a free-body diagram drawn with plain \draw inside a
+// pgfplots axis without \addplot rendered empty ("SVG dimensions are missing").
+test("normalizeTikz unwraps a pgfplots axis that only wraps plain drawing", () => {
+  const wrapped = "\\begin{document}\n\\begin{tikzpicture}\n  \\begin{axis}[axis lines=none, width=6cm, height=6cm]\n    \\draw[thick] (0,0) -- (5,0) -- (5,3) -- cycle;\n    \\draw[->,red] (2.5,1.5) -- (2.5,2.3) node[right] {$N$};\n  \\end{axis}\n\\end{tikzpicture}\n\\end{document}\n";
+  const fixed = normalizeTikz(wrapped);
+  assert.doesNotMatch(fixed, /axis|pgfplots/);
+  assert.match(fixed, /^\\usepackage\{tikz\}\n\\begin\{document\}\n\\begin\{tikzpicture\}\n    \\draw\[thick\]/);
+  assert.doesNotMatch(normalizeTikz("\\begin{tikzpicture}\\begin{axis}[axis lines=none]\\draw (0,0)--(1,1);\\end{axis}\\end{tikzpicture}"), /axis/);
+  assert.match(normalizeTikz("\\begin{tikzpicture}\\begin{axis}\\addplot {x^2};\\end{axis}\\end{tikzpicture}"), /\\begin\{axis\}\\addplot/);
+});

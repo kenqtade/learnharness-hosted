@@ -104,6 +104,19 @@ try {
     "CircuitikZ": ["tikz", String.raw`\usepackage{circuitikz}\begin{document}\begin{circuitikz}\draw (0,0) to[R=$R$] (3,0);\end{circuitikz}\end{document}`],
     "Commutative diagram": ["tikz", String.raw`\usepackage{tikz-cd}\begin{document}\begin{tikzcd} A\arrow[r,"f"] & B\end{tikzcd}\end{document}`],
     "Filled label": ["tikz", String.raw`\usepackage{tikz}\begin{document}\begin{tikzpicture}\fill[gray!30] (0,0) rectangle (2,1);\node[draw,fill=white] at (1,0.5) {$N$};\end{tikzpicture}\end{document}`],
+    // HOSTED FORK: the exact source from live chat chat_mwhodnc0_ff300375 (rendered empty before).
+    "Axis-wrapped drawing": ["tikz", String.raw`\begin{document}
+\begin{tikzpicture}
+  \begin{axis}[axis lines=none, width=6cm, height=6cm]
+    \draw[thick,draw=gray!50] (0,0) -- (5,0) -- (5,3) -- cycle;
+    \draw[fill=gray!20] (2.5,1.2) rectangle (2.2,1.5);
+    \draw[->,thick,red] (2.5,1.5) -- (2.5,2.3) node[right] {$N$};
+    \draw[->,thick,blue] (2.5,1.2) -- (2.5,0.5) node[left] {$mg$};
+    \draw[->,thick,green] (2.5,1.2) -- (1.8,0.9) node[left] {$F_r$};
+    \draw[dashed] (2.5,1.2) -- (2.5,1.2);
+  \end{axis}
+\end{tikzpicture}
+\end{document}`],
     "Analytic plot": ["tikz", String.raw`\usepackage{pgfplots}\pgfplotsset{compat=1.16}\begin{document}\begin{tikzpicture}\begin{axis}[xlabel={$x$},ylabel={$f(x)$}]\addplot[domain=-2:2,samples=25]{x^2};\end{axis}\end{tikzpicture}\end{document}`],
   };
   const timings = {};
@@ -156,7 +169,7 @@ try {
     const sameSvg = original.every(svg => svg.isConnected); document.body.style.fontSize = '';
     return { normal, larger, restored: measure(), sameSvg };
   });
-  assert.equal(sizingProof.normal.diagrams.length, 5);
+  assert.equal(sizingProof.normal.diagrams.length, 6);
   for (const state of [sizingProof.normal, sizingProof.larger, sizingProof.restored]) for (const diagram of state.diagrams) {
     assert.ok(Math.abs(diagram.fontPx - state.mathFontPx) < 0.05, `${diagram.id} must match actual KaTeX: ${diagram.fontPx} vs ${state.mathFontPx}`);
     assert.match(diagram.widthAttribute, /em$/);
@@ -175,7 +188,7 @@ try {
       paints: [...root.querySelectorAll('path,text,line,tspan')].filter(node => !node.closest('mask,defs')).map(node => ({ fill: getComputedStyle(node).fill, stroke: getComputedStyle(node).stroke })),
     })) };
   });
-  assert.equal(inkProof.roots.length, 7);
+  assert.equal(inkProof.roots.length, 8);
   for (const root of inkProof.roots) {
     assert.equal(root.background, 'rgba(0, 0, 0, 0)'); assert.equal(root.svgBackground, 'rgba(0, 0, 0, 0)');
     assert.equal(root.ink, 'rgb(216, 222, 233)');
