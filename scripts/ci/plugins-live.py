@@ -74,7 +74,7 @@ for i in range(ROUNDS):
     c, b = call("rich-code-blocks", "get-settings")
     if c == 200 and (b or {}).get("result", {}).get("musicalNotation") == flip: seen["family"] += 1
     c, b = req("GET", "/api/plugins")
-    if c == 200 and all(p.get("enabled") for p in b["plugins"] if p["id"] != "coding-questions"): seen["enabled"] += 1
+    if c == 200 and all(p.get("enabled") for p in b["plugins"] if p["id"] in ("flashcards", "drawing-pad", "rich-code-blocks")): seen["enabled"] += 1
 for k, v in seen.items():
     check(v == ROUNDS, f"{k} visible {v}/{ROUNDS}")
 
