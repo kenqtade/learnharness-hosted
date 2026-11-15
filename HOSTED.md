@@ -26,3 +26,25 @@ Branches: `hosted` is the default and the deployed line. Tags are never pushed h
 workflow must not run on this repository).
 
 Source for the hosted deployments; report hosted-only problems as issues here.
+
+## Core plugins on hosted (branch `feat/core-plugins`)
+
+Flashcards, Drawing Pad and Rich code blocks run on hosted; **Coding Questions is
+blocked** (it runs programs on the server). Turn plugins on with `LH_PLUGINS=1`.
+
+| Problem on Vercel | Fix |
+|---|---|
+| `core-plugins/` is built, not committed | `vercel-build.sh` runs `npm run plugins:build-core`; `next.config.ts` traces it into the functions |
+| plugins write files on a temporary instance disk | host stores and plugin backends' `require("fs")` go through `src/store/vfs.ts` → Convex (`plugin-loader.cjs` hook, hosted only) |
+| a function freezes after its response, killing background workers | workers get `keepAlive` (`waitUntil`), capped at 240 s |
+| several instances cache old plugin data | Flashcards / settings re-read when another instance wrote a newer revision |
+
+| Env | Effect |
+|---|---|
+| `LH_PLUGINS=1` | plugins available (each still enabled in Settings → Plugins) |
+| `LH_MULTI_USER=1` | plugins off unless `LH_PLUGINS_MULTI_USER=1` (plugin data is not per user yet) |
+| `LH_PLUGINS_ALLOW_CODE=1` | unblocks Coding Questions — **do not set on a public server** |
+
+Live checks: `python3 scripts/ci/plugins-live.py` (enable + persistence) and
+`python3 scripts/ci/plugins-worker-live.py` (a background worker finishes; one cheap model call).
+Preview: https://learnharness-plugins.vercel.app (staging Convex).
