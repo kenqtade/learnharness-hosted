@@ -165,6 +165,9 @@ export async function getPluginHost(): Promise<Host> {
 	if (!pluginsAllowed()) refuse();
 	const { host, ready } = runtime();
 	await ready;
+	// HOSTED FORK: other instances share the enable state and plugin data
+	// (Convex); bring this warm host up to date before it answers.
+	if (convexMode) await host.syncHosted();
 	return host;
 }
 /** Await startup once; actual factories run synchronously during per-turn Agent construction. */

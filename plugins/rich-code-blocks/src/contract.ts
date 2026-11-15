@@ -67,3 +67,34 @@ export function checkSource(language: Language, source: string): void {
 export function checkSvgSize(svg: string): void {
   if (new TextEncoder().encode(svg).byteLength > SVG_LIMIT) throw new Error("Rendered SVG exceeds the 2 MiB limit.");
 }
+
+/** HOSTED FORK (2026-11): small/fast tutor models often write a bare
+ *  `\begin{tikzpicture}…` (or add `\documentclass`) despite the instructions,
+ *  and the engine then fails with "TeX engine render failed". Repair the
+ *  common shapes before compiling; a complete, correct document is returned
+ *  unchanged.
+ *  - drops `\documentclass`/`\documentstyle` lines (the engine supplies one)
+ *  - adds `\usepackage{…}` for the environments/commands the body uses
+ *  - wraps the body in `\begin{document}…\end{document}` when missing */
+export function normalizeTikz(source: string): string {
+  let text = source.replace(/^[ \t]*\\document(?:class|style)(?:\[[^\]]*\])?\{[^}]*\}[ \t]*\r?\n?/gm, "");
+  const hasDocument = /\\begin\{document\}/.test(text);
+  const needs: [string, RegExp][] = [
+    ["tikz", /\\begin\{tikzpicture\}|\\tikz\b|\\usetikzlibrary/],
+    ["circuitikz", /\\begin\{circuitikz\}/],
+    ["tikz-cd", /\\begin\{tikzcd\}/],
+    ["pgfplots", /\\begin\{axis\}|\\addplot/],
+    ["amsmath", /\\text\{|\\begin\{(?:align|aligned|cases|pmatrix|bmatrix)\*?\}/],
+  ];
+  const loaded = (pkg: string) => new RegExp(`\\\\usepackage(?:\\[[^\\]]*\\])?\\{[^}]*\\b${pkg.replace("-", "\\-")}\\b[^}]*\\}`).test(text);
+  const missing = needs.filter(([pkg, used]) => used.test(text) && !loaded(pkg)).map(([pkg]) => pkg);
+  const compat = missing.includes("pgfplots") && !/\\pgfplotsset\{[^}]*compat/.test(text) ? "\\pgfplotsset{compat=1.16}\n" : "";
+  const packages = missing.map(pkg => `\\usepackage{${pkg}}\n`).join("") + compat;
+  if (hasDocument) return packages ? text.replace(/\\begin\{document\}/, `${packages}\\begin{document}`) : text;
+  // Preamble lines the model wrote above the picture stay in the preamble.
+  const lines = text.split(/\r?\n/);
+  const preamble: string[] = [], body: string[] = [];
+  for (const line of lines) (body.length === 0 && /^\s*(\\usepackage|\\usetikzlibrary|\\pgfplotsset|\\tikzset|\\newcommand|\\definecolor|%|$)/.test(line) ? preamble : body).push(line);
+  const head = [packages.trimEnd(), preamble.join("\n").trim()].filter(Boolean).join("\n");
+  return `${head ? head + "\n" : ""}\\begin{document}\n${body.join("\n").trim()}\n\\end{document}\n`;
+}

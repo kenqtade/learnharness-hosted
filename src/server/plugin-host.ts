@@ -582,6 +582,43 @@ export function createPluginHost(deps: PluginHostDependencies) {
 			});
 		},
 		refresh: () => enqueue(async () => { assertOpen(); await initializeInternal(); await discover(readState(stateFile)); change(); }),
+		/** HOSTED FORK (core plugins, 2026-11): on a hosted server every
+		 *  serverless instance keeps its OWN warm host, but the enable state and
+		 *  plugin data are shared (Convex). Another instance may have enabled or
+		 *  disabled a plugin, or changed a plugin's settings, since this host
+		 *  activated. Called once per request (after the store synced):
+		 *  1. apply the stored enable state to this host (never writes it);
+		 *  2. let each active backend re-read its own data through an optional
+		 *     `hosted-sync` operation — e.g. Rich code blocks re-registers the
+		 *     tutor instructions for the families switched on elsewhere.
+		 *  Local/desktop never calls this: one process, one host. */
+		syncHosted: () => enqueue(async () => {
+			assertOpen(); await initializeInternal();
+			const state = readState(stateFile);
+			let changed = false;
+			for (const pkg of packages.values()) {
+				const wanted = state.enabled[pkg.info.id] === true;
+				if (wanted === pkg.info.enabled) continue;
+				changed = true;
+				if (pkg.blocked) { pkg.info.enabled = wanted; continue; }
+				pkg.info.enabled = wanted;
+				if (!wanted) {
+					delete pkg.contributionWarning;
+					const failures = await deactivate(pkg);
+					pkg.info.status = failures.length ? "error" : "disabled";
+					pkg.info.error = failures.length ? `Cleanup: ${failures.join("; ")}` : pkg.restart;
+				} else if (!pkg.activation?.ready) await activate(pkg);
+			}
+			for (const pkg of packages.values()) {
+				const activation = pkg.activation;
+				if (!pkg.info.enabled || !activation?.ready || !live(pkg, activation)) continue;
+				const sync = activation.handlers.get("hosted-sync");
+				if (!sync) continue;
+				try { await sync(undefined); }
+				catch (e) { console.warn(`[plugins] ${pkg.info.id} hosted-sync failed: ${errorText(e)}`); }
+			}
+			if (changed) change();
+		}),
 		async call(id: string, operation: string, input?: unknown): Promise<unknown> {
 			assertOpen();
 			const pkg = get(id), activation = pkg.activation;

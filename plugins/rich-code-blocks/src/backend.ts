@@ -18,9 +18,14 @@ export function activate(ctx: PluginBackendContext): () => void {
   // another instance may have written settings.json since this one cached
   // it. Re-read before answering and before changing, so a revision never
   // overwrites a newer one. An unreadable file keeps the cached settings.
+  // The tutor instructions follow the families: when another instance switched
+  // a family on or off, re-register them here too, or this instance's tutor
+  // never learns the block format (bare TikZ → "TeX engine render failed").
   const reload = (): void => {
+    const before = settings;
     try { settings = read(); }
     catch { /* unreadable or malformed: keep the cached settings */ }
+    if (FAMILIES.some(family => before[family] !== settings[family])) updateInstructions();
   };
   const instructionDisposers: (() => void)[] = [];
   const updateInstructions = () => {
@@ -32,6 +37,8 @@ export function activate(ctx: PluginBackendContext): () => void {
   const assertActive = () => { if (ctx.signal.aborted) throw new Error("Rich code blocks is disabled."); };
   updateInstructions();
   const unregisterGet = ctx.handle("get-settings", () => { assertActive(); reload(); return { ...settings }; });
+  // HOSTED FORK: the host calls this once per request on a hosted server.
+  const unregisterSync = ctx.handle("hosted-sync", () => { assertActive(); reload(); return null; });
   const nextRevision = () => {
     if (settings.revision === Number.MAX_SAFE_INTEGER) throw new Error("Settings revision limit reached.");
     return settings.revision + 1;
@@ -59,7 +66,7 @@ export function activate(ctx: PluginBackendContext): () => void {
   return () => {
     if (disposed) return;
     disposed = true;
-    unregisterGet(); unregisterSave();
+    unregisterGet(); unregisterSave(); unregisterSync();
     instructionDisposers.splice(0).forEach(dispose => dispose());
   };
 }
