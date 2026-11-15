@@ -17,6 +17,10 @@ export interface PluginAgentServiceDeps {
 	onUsage?: (model: PluginModelSpec, usage: Usage) => void;
 	signal?: AbortSignal;
 	onChange?: () => void;
+	/** HOSTED FORK: a hosted serverless function freezes once the response is
+	 *  sent. The host injects its keep-alive here, so a run that outlives the
+	 *  request still finishes. Unset locally: the process stays up. */
+	background?: (work: Promise<unknown>) => void;
 }
 
 const clone = <T>(value: T): T => structuredClone(value);
@@ -145,7 +149,9 @@ export function createPluginAgentService(deps: PluginAgentServiceDeps): PluginAg
 				throw new Error("Plugin agent run cancelled or unavailable");
 			}
 		};
-		void (async () => {
+		// HOSTED FORK: the run outlives the request on a serverless function,
+		// so the host keeps the function alive for it.
+		const work = (async () => {
 			try {
 				const engine = await deps.engineFor(clone(d.model), purpose);
 				active();
@@ -257,6 +263,8 @@ export function createPluginAgentService(deps: PluginAgentServiceDeps): PluginAg
 				if (!disposed) { s.partial = undefined; notify(s); }
 			}
 		})();
+		if (deps.background) deps.background(work);
+		else void work;
 	};
 	const accept = (s: Session, options: PluginAgentInputOptions) => {
 		open();
