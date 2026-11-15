@@ -22,7 +22,7 @@ const evidence = fs.mkdtempSync(path.join(os.tmpdir(), "lh-rich-browser-"));
 console.log(`Disposable browser evidence: ${evidence}`);
 const helper = await build({ absWorkingDir: root, stdin: { contents: 'export {sanitizeSvg} from "./src/svg.ts";', resolveDir: root }, bundle: true, format: "esm", platform: "browser", write: false });
 const html = `<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="data:,"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/reference-katex/katex.css"><style>
-html{--foreground:#d8dee9;--lh-ink-code:#ff00ff}body{background:#171717;color:var(--foreground);font:16px system-ui;margin:24px}#cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}article{min-width:0}h2{font-size:15px}pre{white-space:pre-wrap}body.light{background:#f7f7f7}
+html{--foreground:#d8dee9;--background:#171717;--lh-ink-code:#ff00ff}body{background:#171717;color:var(--foreground);font:16px system-ui;margin:24px}#cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}article{min-width:0}h2{font-size:15px}pre{white-space:pre-wrap}body.light{background:#f7f7f7}
 </style></head><body><h1>Rich code blocks — disposable fixture</h1><p id="reference-math">Chat LaTeX size: ${katex.renderToString("N+mg+R+x_1", { output: "html", throwOnError: true })}</p><div id="cards"></div><script type="module">
 import {activate} from '/main.js';
 import {sanitizeSvg} from '/test-utils.js';
@@ -103,6 +103,7 @@ try {
     "Physics / geometry": ["tikz", String.raw`\begin{document}\begin{tikzpicture}\draw (0,0) rectangle (1,1);\draw[->] (0.5,0.5)--(0.5,2) node[above] {$N$};\draw[->] (0.5,0.5)--(0.5,-1) node[below] {$mg$};\end{tikzpicture}\end{document}`],
     "CircuitikZ": ["tikz", String.raw`\usepackage{circuitikz}\begin{document}\begin{circuitikz}\draw (0,0) to[R=$R$] (3,0);\end{circuitikz}\end{document}`],
     "Commutative diagram": ["tikz", String.raw`\usepackage{tikz-cd}\begin{document}\begin{tikzcd} A\arrow[r,"f"] & B\end{tikzcd}\end{document}`],
+    "Filled label": ["tikz", String.raw`\usepackage{tikz}\begin{document}\begin{tikzpicture}\fill[gray!30] (0,0) rectangle (2,1);\node[draw,fill=white] at (1,0.5) {$N$};\end{tikzpicture}\end{document}`],
     "Analytic plot": ["tikz", String.raw`\usepackage{pgfplots}\pgfplotsset{compat=1.16}\begin{document}\begin{tikzpicture}\begin{axis}[xlabel={$x$},ylabel={$f(x)$}]\addplot[domain=-2:2,samples=25]{x^2};\end{axis}\end{tikzpicture}\end{document}`],
   };
   const timings = {};
@@ -114,6 +115,17 @@ try {
     assert.ok(result.width > 0 && result.height > 0, `${id} has painted dimensions`);
     fs.writeFileSync(path.join(evidence, id.replaceAll(/[^a-z0-9]/gi, '-') + '.svg'), await page.evaluate(id => document.getElementById(id).querySelector('svg').outerHTML, id));
   }
+  // HOSTED FORK: in dark mode, white/grey TikZ fills follow the theme like black ink does,
+  // so a label drawn on them stays readable (light text on a dark fill, not on white).
+  const fills = await page.evaluate(() => {
+    const lum = value => { const [r, g, b] = value.match(/[\d.]+/g).map(Number); return (r + g + b) / (value.startsWith('color(') ? 3 : 765); };
+    const svg = document.getElementById('Filled label').querySelector('svg');
+    const painted = [...svg.querySelectorAll('path, rect, polygon')].map(node => getComputedStyle(node).fill).filter(fill => fill.startsWith('rgb') || fill.startsWith('color'));
+    const text = [...svg.querySelectorAll('text, use')].map(node => getComputedStyle(node).fill).filter(Boolean);
+    return { fills: painted.map(lum), text: text.map(lum) };
+  });
+  assert.ok(fills.fills.length >= 2 && fills.fills.every(value => value < 0.35), `dark-mode fills must be dark: ${JSON.stringify(fills)}`);
+  assert.ok(fills.text.length > 0 && fills.text.every(value => value > 0.6), `labels must stay light: ${JSON.stringify(fills)}`);
   const chemicalLabels = await page.evaluate(() => {
     const svg = document.getElementById('Chemical structure').querySelector('svg');
     const bounds = svg.getBoundingClientRect();
@@ -144,7 +156,7 @@ try {
     const sameSvg = original.every(svg => svg.isConnected); document.body.style.fontSize = '';
     return { normal, larger, restored: measure(), sameSvg };
   });
-  assert.equal(sizingProof.normal.diagrams.length, 4);
+  assert.equal(sizingProof.normal.diagrams.length, 5);
   for (const state of [sizingProof.normal, sizingProof.larger, sizingProof.restored]) for (const diagram of state.diagrams) {
     assert.ok(Math.abs(diagram.fontPx - state.mathFontPx) < 0.05, `${diagram.id} must match actual KaTeX: ${diagram.fontPx} vs ${state.mathFontPx}`);
     assert.match(diagram.widthAttribute, /em$/);
@@ -163,7 +175,7 @@ try {
       paints: [...root.querySelectorAll('path,text,line,tspan')].filter(node => !node.closest('mask,defs')).map(node => ({ fill: getComputedStyle(node).fill, stroke: getComputedStyle(node).stroke })),
     })) };
   });
-  assert.equal(inkProof.roots.length, 6);
+  assert.equal(inkProof.roots.length, 7);
   for (const root of inkProof.roots) {
     assert.equal(root.background, 'rgba(0, 0, 0, 0)'); assert.equal(root.svgBackground, 'rgba(0, 0, 0, 0)');
     assert.equal(root.ink, 'rgb(216, 222, 233)');
@@ -256,9 +268,12 @@ try {
   }));
   const initialColors = await readColors(); const postsBeforeColors = await page.evaluate(() => window.texPosts);
   await page.evaluate(() => host.setTextColor('#123456')); const textColors = await readColors();
-  for (const color of ['rgb(255, 0, 0)', 'rgb(0, 0, 255)', 'rgb(255, 255, 255)']) {
+  for (const color of ['rgb(255, 0, 0)', 'rgb(0, 0, 255)']) {
     assert.ok(initialColors.tikz.flat().includes(color) && textColors.tikz.flat().includes(color), `Authored ${color} must survive theme Text changes.`);
   }
+  // HOSTED FORK: authored white is "paper" — it follows the theme background
+  // (#171717 here) so labels drawn on it stay readable in dark mode.
+  assert.ok(!initialColors.tikz.flat().includes('rgb(255, 255, 255)') && initialColors.tikz.flat().some(paint => paint === 'rgb(23, 23, 23)' || /^color\(srgb 0\.090\d* 0\.090\d* 0\.090\d*\)$/.test(paint)), `White TikZ paint follows the theme background: ${JSON.stringify(initialColors.tikz)}`);
   assert.ok(initialColors.chemistry.flat().includes('rgb(231, 76, 60)') && textColors.chemistry.flat().includes('rgb(231, 76, 60)'), 'Oxygen stays red.');
   assert.ok(initialColors.chemistry.map(paint => paint[1]).includes('rgb(216, 222, 233)'));
   assert.ok(textColors.chemistry.map(paint => paint[1]).includes('rgb(18, 52, 86)'), 'Neutral bond-gradient stops follow theme Text.');
@@ -290,7 +305,7 @@ C \arrow[r,"k"'] & D
 \draw[->] (-0.6,0)--(-1.6,0) node[left] {$f_k$};
 \draw (-1.8,-0.55)--(1.8,-0.55);
 \end{tikzpicture}
-\end{document}`, invalid: source => source.replace('\\usepackage{amsmath}', '') },
+\end{document}`, invalid: source => source.replace('\\usepackage{amsmath}', ''), repaired: true },
     { id: 'plot-authoring', source: String.raw`\usepackage{pgfplots}
 \pgfplotsset{compat=1.16}
 \begin{document}
@@ -302,11 +317,16 @@ C \arrow[r,"k"'] & D
 \end{document}`, invalid: source => source.replace('compat=1.16', 'compat=1.18') },
   ];
   const authoringProof = [];
-  for (const { id, source, invalid } of authoringCases) {
+  for (const { id, source, invalid, repaired } of authoringCases) {
     const unsupported = invalid(source);
     const failure = await render(id + '-unsupported', 'tikz', unsupported);
-    assert.match(failure.error, /TeX engine render failed/, id);
-    assert.equal(failure.source, unsupported, 'Failed source stays intact; no automatic repairs.');
+    // HOSTED FORK: normalizeTikz loads packages the body uses (here amsmath for
+    // \text{}), so this model mistake now renders; unfixable ones still fail.
+    if (repaired) assert.ok(failure.svg && failure.paths > 0, `${id}: repaired source renders: ${JSON.stringify(failure)}`);
+    else {
+      assert.match(failure.error, /TeX engine render failed/, id);
+      assert.equal(failure.source, unsupported, 'Failed source stays intact.');
+    }
     const corrected = await render(id, 'tikz', source);
     assert.ok(corrected.svg && corrected.paths > 0 && corrected.width > 0 && corrected.height > 0, `${id}: ${JSON.stringify(corrected)}`);
     authoringProof.push({ id, failure, corrected });
