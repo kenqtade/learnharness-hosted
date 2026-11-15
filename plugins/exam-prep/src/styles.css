@@ -1,0 +1,3 @@
+/* Exam Prep — scope every rule under .exam-prep (bank) or .exam-sim (simulator). Use host
+   variables (--foreground, --background, --muted, --border…) so light/dark themes work. */
+.exam-prep, .exam-sim { color: var(--foreground); }

@@ -1,0 +1,3 @@
+/* Graph Lab — scope every rule under .graph-lab. Use host variables (--foreground,
+   --background, --border…) so light/dark themes work. */
+.graph-lab { color: var(--foreground); }

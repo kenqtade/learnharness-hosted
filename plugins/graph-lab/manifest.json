@@ -1,0 +1,11 @@
+{
+  "apiVersion": 1,
+  "id": "graph-lab",
+  "name": "Graph Lab",
+  "version": "0.1.0",
+  "minAppVersion": "0.6.0",
+  "description": "Interactive graphing for every math topic: functions, sliders, calculus, complex numbers, matrices and 3D, in its own screen and live inside lessons.",
+  "main": "main.js",
+  "backend": "backend.cjs",
+  "styles": "styles.css"
+}
