@@ -17,12 +17,14 @@ import { test } from "node:test";
 const STORE_DIR = path.join(import.meta.dirname, "..", "src", "store");
 const FS_IMPORT = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)["'](?:node:)?fs(?:\/promises)?["']/;
 
-/** Plugin-platform record stores (upstream v0.6.0) need real-disk semantics
- *  (directory fsync, exclusive opens) and only ever run when plugins are
- *  allowed — never on a hosted server (src/server/plugins.ts pluginsAllowed;
- *  pinned by tests/plugins-hosted-gate.test.ts). Named one by one so a NEW
- *  upstream store that bypasses the seam still fails this gate. */
-const LOCAL_ONLY_PLUGIN_STORES = new Set(["plugin-agent-records.ts", "plugin-data-paths.ts", "plugin-task-records.ts"]);
+/** Plugin-platform record stores (upstream v0.6.0) used to be exempt:
+ *  they needed real-disk semantics (directory fsync, exclusive opens) that
+ *  the seam did not have. HOSTED FORK: the seam grew virtual descriptors
+ *  ("wx" → EEXIST, fsync, close) and synthetic stats, so the plugin stores
+ *  write through it like every other store — and the exemption is gone.
+ *  Named one by one so a NEW upstream store that bypasses the seam still
+ *  fails this gate. */
+const LOCAL_ONLY_PLUGIN_STORES = new Set<string>();
 
 test("no store module touches node:fs directly (only vfs.ts may)", () => {
 	const offenders = fs

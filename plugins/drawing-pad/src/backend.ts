@@ -8,17 +8,27 @@ import { acceptedPoseKeys } from "./poses.ts";
 /** The backend stores preferences only. Editable drawings never leave window memory. */
 export function activate(ctx: PluginBackendContext): () => void {
   const file = path.join(ctx.dataDirectory, "settings.json");
-  let settings: Settings;
-  try { settings = parseSettings(JSON.parse(fs.readFileSync(file, "utf8"))); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    settings = { ...DEFAULT_SETTINGS };
-  }
+  const read = (): Settings => {
+    try { return parseSettings(JSON.parse(fs.readFileSync(file, "utf8"))); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return { ...DEFAULT_SETTINGS };
+    }
+  };
+  let settings = read();
+  // HOSTED FORK: several serverless instances share this data directory, so
+  // another instance may have written settings.json since this one cached
+  // it. Re-read before answering and before changing, so a revision never
+  // overwrites a newer one. An unreadable file keeps the cached settings.
+  const reload = (): void => {
+    try { settings = read(); }
+    catch { /* unreadable or malformed: keep the cached settings */ }
+  };
   let disposed = false;
   const assertActive = () => {
     if (disposed || ctx.signal.aborted) throw new Error("Drawing Pad is disabled.");
   };
-  const get = ctx.handle("get-settings", () => { assertActive(); return { ...settings }; });
+  const get = ctx.handle("get-settings", () => { assertActive(); reload(); return { ...settings }; });
   const poses = ctx.handle("get-session-poses", input => {
     assertActive();
     if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 1 ||
@@ -29,6 +39,7 @@ export function activate(ctx: PluginBackendContext): () => void {
   });
   const persist = (change: Partial<Pick<Settings, "darkInkColor" | "lightInkColor" | "imageScale">>) => {
     assertActive();
+    reload(); // HOSTED FORK: build the new revision on the newest stored one.
     const next = { ...settings, ...change, revision: settings.revision + 1 };
     if (next.darkInkColor === settings.darkInkColor && next.lightInkColor === settings.lightInkColor &&
       next.imageScale === settings.imageScale) return { ...settings };

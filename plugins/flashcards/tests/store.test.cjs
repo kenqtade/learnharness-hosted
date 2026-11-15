@@ -73,11 +73,14 @@ test('legacy cleanup is atomic, retains live manual cues and text-free receipts,
     ] };
     s.reviews.push({ id: 'r', propositionId: 'p', cueId: 'gone', question: 'OLD REVIEW QUESTION', answer: 'OLD REVIEW ANSWER', rating: 3, at: 123 });
   });
+  const revision = original.get().revision;
   const bytes = fs.readFileSync(file, 'utf8'), rename = t.mock.method(fs, 'renameSync', () => { throw new Error('Migration save unavailable'); });
   try { assert.throws(() => openStore(dir), /Migration save unavailable/); }
   finally { rename.mock.restore(); }
   assert.equal(fs.readFileSync(file, 'utf8'), bytes); assert.deepEqual(fs.readdirSync(dir), ['flashcards.json']);
-  const migrated = openStore(dir).get(); assert.equal(migrated.revision, original.get().revision + 1);
+  // HOSTED FORK: the store adopts a newer revision another instance wrote,
+  // so the pre-migration revision is captured before the second open.
+  const migrated = openStore(dir).get(); assert.equal(migrated.revision, revision + 1);
   assert.deepEqual(migrated.propositions.p.cues, [{ id: 'kept', question: 'Kept question', answer: 'Kept answer' }]);
   assert.equal(migrated.propositions.p.learningCueId, null); assert.equal(migrated.propositions.p.version, 2);
   assert.deepEqual(migrated.reviews, [{ id: 'r', propositionId: 'p', cueId: 'gone', rating: 3, at: 123 }]);

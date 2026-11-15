@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { PATHS, GRAPH_FORMAT_FILE, RENDER_SETTINGS_FILE } from "../../config.ts";
 import packageJson from "../../package.json";
@@ -8,6 +7,10 @@ import { createPluginWorkerService } from "../agent/plugin-workers.ts";
 import { registerJobAbort, unregisterJobAbort } from "../agent/subagents/aborts.ts";
 import { createPluginAgentRecordStore } from "../store/plugin-agent-records.ts";
 import { createPluginTaskRecordStore, readPluginTaskRecord, recoverPluginTaskRecords } from "../store/plugin-task-records.ts";
+// HOSTED FORK: the storage seam. On Vercel every file under the data dir
+// lives in Convex; the plugin backends get the seam instead of node:fs.
+import vfs, { convexMode } from "../store/vfs.ts";
+import { keepAlive } from "./keep-alive.ts";
 import corePluginIds from "../../core-plugins.json";
 import { assertGraphFormat } from "../store/graph-format.ts";
 import { createPluginLearningData } from "./plugin-learning.ts";
@@ -24,6 +27,12 @@ import { isTurnRunning } from "./turn-liveness.ts";
 import { compactionInFlight } from "./compaction.ts";
 
 export const pluginDirectory = path.join(/* turbopackIgnore: true */ PATHS.data, "plugins");
+// HOSTED FORK: a hosted serverless function freezes once the response is
+// sent, so background plugin work must be kept alive explicitly. Locally the
+// process stays up and nothing changes.
+const hostedRuntime = convexMode || process.env.VERCEL === "1";
+/** The longest background plugin task a hosted function may run. */
+const HOSTED_WORKER_TIMEOUT_MS = 240_000;
 // Explicitly staged by build-server, not discovered by Next's filesystem tracer.
 const core = {
 	directory: path.join(/* turbopackIgnore: true */ PATHS.root, "core-plugins"),
@@ -45,7 +54,7 @@ function runtime(): Runtime {
 		isBusy: isTurnRunning, isCompacting: compactionInFlight,
 		readMetadata(name) {
 			assertGraphFormat();
-			try { return JSON.parse(fs.readFileSync(name === "format.json" ? GRAPH_FORMAT_FILE : RENDER_SETTINGS_FILE, "utf8")); }
+			try { return JSON.parse(vfs.readFileSync(name === "format.json" ? GRAPH_FORMAT_FILE : RENDER_SETTINGS_FILE, "utf8")); }
 			catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 		},
 	});
@@ -56,12 +65,16 @@ function runtime(): Runtime {
 		// The process-global runtime owns one admission slot across all plugins
 		// and every separately compiled Next route module.
 		convertDocument: createPluginDocumentConverter().convert,
+		// HOSTED FORK: only on hosted servers do plugin backends get the
+		// storage seam instead of node:fs. Locally there is no hook at all.
+		...(convexMode ? { backendFs: vfs } : {}),
 		createServices({ manifest, dataDirectory, signal }) {
 			const inference = createPluginInference({ signal, dataDirectory });
 			const agents = createPluginAgentService({
 				store: createPluginAgentRecordStore(path.join(/* turbopackIgnore: true */ dataDirectory, "agents")),
 				engineFor: inference.engineFor, onUsage: inference.onUsage, signal,
 				onChange: () => { if (!signal.aborted) emit("plugin-message", { pluginId: manifest.id, topic: "agents-changed" }); },
+				...(hostedRuntime ? { background: keepAlive } : {}),
 			});
 			const workerActivity = registerPluginWorkerActivity({
 				pluginId: manifest.id, pluginName: manifest.name, signal,
@@ -71,6 +84,7 @@ function runtime(): Runtime {
 				store: createPluginTaskRecordStore(path.join(/* turbopackIgnore: true */ dataDirectory, "tasks")),
 				engineFor: inference.engineFor, onUsage: inference.onUsage, signal,
 				onChange: workerActivity,
+				...(hostedRuntime ? { background: keepAlive, maxTimeoutMs: HOSTED_WORKER_TIMEOUT_MS } : {}),
 			});
 			return { learning, inference: inference.inference, agents, workers,
 				createBackgroundTool(context, definition) {

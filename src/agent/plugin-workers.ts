@@ -22,6 +22,14 @@ export interface PluginWorkerServiceDeps {
 	onUsage?: (model: PluginModelSpec, usage: Usage) => void;
 	signal?: AbortSignal;
 	onChange?: (metadata: PluginWorkerActivityMetadata) => void;
+	/** HOSTED FORK: a hosted serverless function freezes once the response is
+	 *  sent. The host injects its keep-alive here, so a task that outlives
+	 *  the request still finishes. Unset locally: the process stays up. */
+	background?: (work: Promise<unknown>) => void;
+	/** HOSTED FORK: the longest task this host may run (the function's
+	 *  budget). Clamps every task's own timeout, and applies one when the
+	 *  task asked for none. */
+	maxTimeoutMs?: number;
 }
 const clone = <T>(value: T): T => structuredClone(value);
 const terminal = (r: PluginTaskRecord) => r.status !== "queued" && r.status !== "running";
@@ -51,7 +59,7 @@ async function abortable<T>(value: T | Promise<T>, signal: AbortSignal): Promise
 	finally { signal.removeEventListener("abort", abort); }
 }
 const canonical = (value: unknown): string => JSON.stringify(value, (_k, v) => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : v);
-function acceptedOptions(value: PluginWorkerStartOptions): PluginWorkerStartOptions {
+function acceptedOptions(value: PluginWorkerStartOptions, maxTimeoutMs?: number): PluginWorkerStartOptions {
 	if (typeof value?.requestId !== "string" || !value.requestId.length) throw new Error("Invalid worker requestId");
 	if (typeof value.prompt !== "string") throw new Error("Explicit worker prompt required");
 	if (!Number.isSafeInteger(value.maxTurns) || value.maxTurns < 1) throw new Error("Invalid worker maxTurns");
@@ -61,8 +69,11 @@ function acceptedOptions(value: PluginWorkerStartOptions): PluginWorkerStartOpti
 	if (!model || typeof model.provider !== "string" || !model.provider.trim() || typeof model.id !== "string" || !model.id.trim()) throw new Error("Explicit worker model required");
 	if (model.thinkingLevel !== undefined && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(model.thinkingLevel)) throw new Error("Invalid worker thinkingLevel");
 	const options: PluginInferenceOptions = JSON.parse(JSON.stringify(validatePluginInferenceOptions(value.options)));
+	// HOSTED FORK: the host's own budget is the ceiling — a task can ask for
+	// less, never for more.
+	const timeoutMs = maxTimeoutMs === undefined ? value.timeoutMs : Math.min(value.timeoutMs ?? maxTimeoutMs, maxTimeoutMs);
 	return { requestId: value.requestId, input: json(value.input), prompt: value.prompt, model: { provider: model.provider, id: model.id, ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }) }, purpose: value.purpose, maxTurns: value.maxTurns,
-		...(Object.keys(options).length ? { options } : {}), ...(value.timeoutMs === undefined ? {} : { timeoutMs: value.timeoutMs }) };
+		...(Object.keys(options).length ? { options } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) };
 }
 interface Task {
 	record: PluginTaskRecord;
@@ -257,10 +268,10 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 		},
 		start(definitionId, input) {
 			open(); id(definitionId, "worker id");
-			const options = acceptedOptions(input);
+			const options = acceptedOptions(input, deps.maxTimeoutMs);
 			const existing = [...tasks.values()].find(t => t.record.requestId === options.requestId);
 			if (existing) {
-				if (existing.record.definitionId !== definitionId || canonical(acceptedOptions(existing.record)) !== canonical(options)) throw new Error("requestId was already used for a different worker request");
+				if (existing.record.definitionId !== definitionId || canonical(acceptedOptions(existing.record, deps.maxTimeoutMs)) !== canonical(options)) throw new Error("requestId was already used for a different worker request");
 				if (existing.poisoned && !terminal(existing.record)) throw existing.poisoned;
 				return snapshot(existing);
 			}
@@ -284,7 +295,14 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 				};
 				schedule();
 			}
-			notify(t); queueMicrotask(() => { void execute(t, d); });
+			notify(t);
+			// HOSTED FORK: the task outlives the request on a serverless
+			// function, so the host keeps the function alive for it.
+			const work = new Promise<void>((resolve) => {
+				queueMicrotask(() => { void execute(t, d).then(() => resolve(), () => resolve()); });
+			});
+			if (deps.background) deps.background(work);
+			else void work;
 			return snapshot(t);
 		},
 		list() { return [...tasks.values()].map(snapshot); },
