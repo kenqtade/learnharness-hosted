@@ -43,8 +43,17 @@ setup_serverless_chromium() {
 	npm install --no-save --include=dev --no-audit --no-fund "@sparticuz/chromium@$SERVERLESS_CHROMIUM_VERSION" \
 		|| echo "[vercel-build] WARNING: serverless Chromium failed to install; hosted demos will report no render engine"
 }
+# HOSTED FORK (core plugins): upstream's `npm run build` stages the shipped
+# Core plugins (core-plugins/, gitignored) before next build; this script calls
+# next build directly, so stage them here too or the bundle has no plugins.
+build_core_plugins() {
+	if node -e 'process.exit(require("./package.json").scripts?.["plugins:build-core"] ? 0 : 1)' 2>/dev/null; then
+		npm run plugins:build-core
+	fi
+}
 build_app() {
 	setup_plugins
+	build_core_plugins || echo "[vercel-build] WARNING: core plugins failed to build; the app ships without them"
 	setup_serverless_chromium
 	exec npx next build
 }
@@ -114,6 +123,7 @@ if [ $merge_status -eq 0 ]; then
 	echo "[vercel-build] Running type check..."
 	setup_plugins || restore_and_build_current "the merged release's plugins failed to set up"
 	NODE_OPTIONS=--max-old-space-size=4096 npx tsc --noEmit || restore_and_build_current "the merged release does not type-check"
+	build_core_plugins || restore_and_build_current "the merged release's core plugins failed to build"
 	setup_serverless_chromium
 	npx next build || restore_and_build_current "the merged release failed to build"  # plugins already set up above
 	exit 0

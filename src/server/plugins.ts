@@ -50,6 +50,7 @@ function runtime(): Runtime {
 		},
 	});
 	const installationErrors: Record<string, string> = Object.create(null);
+	Object.assign(installationErrors, hostedPluginBlocks()); // HOSTED FORK: never activate code-running plugins
 	const host = createPluginHost({
 		directory: pluginDirectory, core, appVersion: packageJson.version, installationErrors,
 		// The process-global runtime owns one admission slot across all plugins
@@ -112,9 +113,26 @@ function runtime(): Runtime {
  *  operator opts in with LH_PLUGINS=1. Desktop/local: unchanged. Every caller
  *  already treats an unavailable host as "native lesson only". */
 export function pluginsAllowed(env: Record<string, string | undefined> = process.env): boolean {
+	// HOSTED FORK (core plugins, 2026-11): a plugin backend is ONE server-wide
+	// activation with ONE data folder — not per account. With accounts on,
+	// members would share each other's plugin data (decks, settings), so a
+	// multi-user deployment keeps the platform off unless the operator
+	// explicitly accepts that with LH_PLUGINS_MULTI_USER=1.
+	if (env.LH_MULTI_USER === "1" && env.LH_PLUGINS_MULTI_USER !== "1") return false;
 	if (env.LH_PLUGINS === "1") return true;
 	if (env.LH_PLUGINS === "0") return false;
 	return env.LH_PROFILE?.trim() !== "hosted";
+}
+/** HOSTED FORK (core plugins, 2026-11): Core plugins that execute programs
+ *  on the server stay unavailable on a hosted deployment even when the
+ *  platform is on. Coding Questions runs tutor/learner tests as processes with
+ *  the server's permissions — and the server's environment holds deployment
+ *  secrets. LH_PLUGINS_ALLOW_CODE=1 lifts it (operator's explicit choice). */
+export const HOSTED_CODE_PLUGINS = ["coding-questions"] as const;
+export const HOSTED_CODE_PLUGIN_MESSAGE = "Not available on this hosted server: it runs programs on the server, which would expose the deployment's secrets.";
+export function hostedPluginBlocks(env: Record<string, string | undefined> = process.env): Record<string, string> {
+	if (env.LH_PROFILE?.trim() !== "hosted" || env.LH_PLUGINS_ALLOW_CODE === "1") return {};
+	return Object.fromEntries(HOSTED_CODE_PLUGINS.map(id => [id, HOSTED_CODE_PLUGIN_MESSAGE]));
 }
 export const PLUGINS_OFF_MESSAGE = "Plugins are turned off on this hosted server: plugin code (including coding-question tests) would run on the server for every account. The operator can allow them with LH_PLUGINS=1.";
 const refuse = (): never => { throw new PluginHostError(503, PLUGINS_OFF_MESSAGE); };
