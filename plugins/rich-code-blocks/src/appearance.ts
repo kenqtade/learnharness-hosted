@@ -74,7 +74,7 @@ export function prepareInk(svg: SVGSVGElement, language: Language): void {
 export function greyInk(canonical: string): string | undefined {
   const match = /^rgb\((\d+), (\d+), (\d+)\)$/.exec(canonical);
   if (!match) return undefined;
-  const [r, g, b] = match.slice(1).map(Number);
+  const r = Number(match[1]), g = Number(match[2]), b = Number(match[3]);
   if (Math.max(r, g, b) - Math.min(r, g, b) > 3) return undefined;
   const ink = Math.round((1 - (r + g + b) / 3 / 255) * 100);
   return `color-mix(in srgb, var(--rich-code-blocks-black) ${ink}%, var(--rich-code-blocks-paper))`;
