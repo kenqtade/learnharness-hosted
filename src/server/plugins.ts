@@ -59,9 +59,12 @@ function runtime(): Runtime {
 		},
 	});
 	const installationErrors: Record<string, string> = Object.create(null);
-	Object.assign(installationErrors, hostedPluginBlocks()); // HOSTED FORK: never activate code-running plugins
+	// HOSTED FORK: code-running Core plugins are left out of a hosted catalog
+	// entirely — never activated, and no "startup failed" card in Settings.
+	const blocked = hostedPluginBlocks();
 	const host = createPluginHost({
-		directory: pluginDirectory, core, appVersion: packageJson.version, installationErrors,
+		directory: pluginDirectory, core: { ...core, ids: core.ids.filter(id => !Object.hasOwn(blocked, id)) },
+		appVersion: packageJson.version, installationErrors,
 		// The process-global runtime owns one admission slot across all plugins
 		// and every separately compiled Next route module.
 		convertDocument: createPluginDocumentConverter().convert,

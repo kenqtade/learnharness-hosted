@@ -4,7 +4,7 @@
   PLUGINS_URL=https://learnharness-plugins.vercel.app python3 scripts/ci/plugins-live.py
 
 Checks, over plain HTTP (no browser):
-  1. the catalog lists the core plugins; Coding Questions is blocked on hosted
+  1. the catalog lists the core plugins; Coding Questions is left out on hosted
   2. Flashcards, Drawing Pad and Rich code blocks can be enabled
   3. data written by one request is read back by MANY later requests — Vercel
      spreads them over several instances, so this proves the data lives in
@@ -40,10 +40,9 @@ print(f"▶ catalog ({URL})")
 c, cat = req("GET", "/api/plugins")
 plugins = {p["id"]: p for p in (cat or {}).get("plugins", [])}
 check(c == 200, "GET /api/plugins", str(c))
-for pid in ("flashcards", "drawing-pad", "rich-code-blocks", "coding-questions"):
+for pid in ("flashcards", "drawing-pad", "rich-code-blocks", "graph-lab", "exam-prep"):
     check(pid in plugins, f"lists {pid}")
-cq = plugins.get("coding-questions", {})
-check(cq.get("status") == "error" and "hosted" in (cq.get("error") or ""), "coding-questions is blocked on hosted", str(cq)[:160])
+check("coding-questions" not in plugins, "coding-questions is not offered on hosted", str(plugins.get("coding-questions"))[:160])
 
 print("▶ enable")
 for pid in ("flashcards", "drawing-pad", "rich-code-blocks"):
