@@ -3,7 +3,7 @@
 // Everything here is DOM-free and total: `parseExpression` never throws, it
 // reports a short message in `error` instead. mathjs does the parsing,
 // evaluation, complex numbers and matrices.
-import { parse, type MathNode } from "mathjs";
+import { parse, type MathNode } from "./math.ts";
 
 export type ExpressionKind =
   | "explicit"      // y = f(x)  (also a bare expression)

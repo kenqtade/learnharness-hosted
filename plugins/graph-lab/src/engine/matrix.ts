@@ -1,5 +1,5 @@
 // Graph Lab engine — matrices, exact RREF, eigenvalues and transformation geometry.
-import { eigs, fraction, type Fraction } from "mathjs";
+import { eigs, fraction, type Fraction } from "./math.ts";
 import { type ComplexValue } from "./complex.ts";
 
 export type Matrix = number[][];

@@ -1,5 +1,6 @@
 // Graph Lab UI — tiny plain-DOM helpers. No model or learner text ever goes
 // through innerHTML; everything is created with textContent.
+import { safeColor, type GraphOptions, type GraphState } from "../engine/state.ts";
 
 export type Child = Node | string;
 
@@ -68,4 +69,28 @@ export function errorLine(message: string): HTMLElement {
   const line = element("p", { className: "graph-lab-row-error", textContent: message });
   line.setAttribute("role", "alert");
   return line;
+}
+
+/** Graph options always exist once the learner has touched them. */
+export function ensureOptions(state: GraphState): Required<GraphOptions> {
+  state.options = { degrees: false, grid: true, piTicks: false, ...state.options };
+  return state.options as Required<GraphOptions>;
+}
+
+/** A 6-digit hex colour for `<input type="color">`. */
+export function colorValue(value: string | undefined, index = 0): string {
+  const color = safeColor(value, index);
+  const hex = color.slice(1);
+  if (hex.length === 3) return `#${hex.split("").map(character => character + character).join("")}`;
+  if (hex.length >= 6) return `#${hex.slice(0, 6)}`;
+  return "#2f7ed8";
+}
+
+/** A labelled checkbox row. */
+export function checkRow(labelText: string, checked: boolean, onChange: (value: boolean) => void): HTMLLabelElement {
+  const input = element("input", { type: "checkbox", checked, className: "graph-lab-check" });
+  input.addEventListener("change", () => onChange(input.checked));
+  const label = element("label", { className: "graph-lab-check-row" });
+  label.append(input, element("span", { textContent: labelText }));
+  return label;
 }

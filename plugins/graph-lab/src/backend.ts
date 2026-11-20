@@ -152,7 +152,9 @@ function cleanName(value: unknown): string {
 }
 
 function parseId(value: unknown): string {
-  if (typeof value !== "string" || !/^graph_[A-Za-z0-9_-]{4,64}$/.test(value)) fail("Graph id is invalid.");
+  // Generated ids carry 12 characters after the prefix; requiring at least six
+  // rejects obviously malformed ids while still allowing a caller's own ids.
+  if (typeof value !== "string" || !/^graph_[A-Za-z0-9_-]{6,64}$/.test(value)) fail("Graph id is invalid.");
   return value;
 }
 

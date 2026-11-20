@@ -1,5 +1,5 @@
 // TRACK A — the embeddable calculator. Exam Prep imports THIS signature; keep it stable.
-import { evaluate } from "mathjs";
+import { evaluate } from "./math.ts";
 import { buildScope, collectSliders, parseExpression, type SliderSpec } from "./expressions.ts";
 import { sampleRow } from "./sample.ts";
 import { makeViewport, panView, zoomView, type ViewRect } from "./viewport.ts";

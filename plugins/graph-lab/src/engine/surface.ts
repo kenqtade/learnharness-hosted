@@ -1,6 +1,6 @@
 // Graph Lab engine — z = f(x, y) surfaces and parametric space curves.
 // Pure 3-D maths: rotation, projection, painter's order and normal shading.
-import { parse } from "mathjs";
+import { parse } from "./math.ts";
 
 export interface Vec3 {
   x: number;

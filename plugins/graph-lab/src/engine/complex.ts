@@ -1,5 +1,5 @@
 // Graph Lab engine — complex numbers, the complex plane and domain colouring.
-import { Complex, evaluate, parse } from "mathjs";
+import { Complex, evaluate, parse } from "./math.ts";
 
 export interface ComplexValue {
   re: number;
