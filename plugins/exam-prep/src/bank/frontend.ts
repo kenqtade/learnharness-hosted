@@ -123,7 +123,7 @@ function mountBank(ctx: PluginFrontendContext, container: HTMLElement, signal: A
       onclick: () => { panel = panel === id ? "none" : id; renderToolbar(); renderPanel(); },
     }, label);
     toolbar.append(
-      button("author", "✦ Write with AI", true), button("source", "🔎 Find on the web"), button("import", "⇪ Import a paper"), button("manual", "✎ Add by hand"),
+      button("author", "✦ Write with AI", true), button("source", "↗ Find on the web"), button("import", "⇪ Import a paper"), button("manual", "✎ Add by hand"),
       button("jobs", active ? `Jobs · ${active} running` : `Jobs${jobs.length ? ` (${jobs.length})` : ""}`),
       h("span", { class: "ep-spacer" }),
       h("button", { type: "button", class: "ep-btn ep-btn-ghost", onclick: () => exportBank() }, "Export JSON"),
