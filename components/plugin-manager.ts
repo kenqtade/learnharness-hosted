@@ -474,7 +474,18 @@ export class PluginFrontendManager {
 			if (manifest.styles && this.host.style) {
 				this.addCleanup(life, this.host.style(pluginAssetUrl(info, manifest.styles), () => this.report(life, new Error("Plugin stylesheet could not be loaded"))));
 			}
-			const frontend = await this.host.importModule(pluginAssetUrl(info, manifest.main!));
+			// HOSTED FORK: right after enabling, another serverless instance may still
+			// be activating the plugin and answer 409. Browsers cache a failed module
+			// import per URL, so retry a few times with a fresh URL before giving up.
+			const mainUrl = pluginAssetUrl(info, manifest.main!);
+			let frontend!: PluginFrontendModule;
+			for (let attempt = 0; ; attempt++) {
+				try { frontend = await this.host.importModule(attempt ? `${mainUrl}&attempt=${attempt}` : mainUrl); break; }
+				catch (error) {
+					if (attempt >= 3 || !this.current(life)) throw error;
+					await new Promise(resolve => setTimeout(resolve, 750 * 2 ** attempt));
+				}
+			}
 			if (!this.current(life)) return;
 			if (typeof frontend.activate !== "function") throw new Error("Plugin frontend must export activate(context)");
 			const cleanup = await frontend.activate(context);

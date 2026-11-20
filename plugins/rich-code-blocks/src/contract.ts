@@ -23,7 +23,7 @@ export const INSTRUCTIONS: Record<Family, string> = {
   technicalDiagrams: [
     "For static technical diagrams, use a tikz fenced code block containing one self-contained TeX document. These blocks support physics/free-body diagrams, geometry, circuit schematics (not simulation), commutative diagrams, and analytic function plots.",
     "Every block is compiled independently. Put all required package and library declarations before \\begin{document}, then the diagram, then \\end{document}. The engine supplies the standalone document class: never include \\documentclass or \\documentstyle, and never rely on declarations from another block.",
-    "Explicitly load the packages required by the diagram: \\usepackage{tikz}, \\usepackage{circuitikz}, \\usepackage{tikz-cd}, or \\usepackage{pgfplots}. For labels using \\text{...} or aligned equations, also load \\usepackage{amsmath}. Declare needed TikZ libraries with \\usetikzlibrary in the preamble.",
+    "Use a pgfplots axis only around \\addplot function or data plots; draw free-body, geometry and other diagrams with plain \\draw/\\node commands directly in the tikzpicture. Explicitly load the packages required by the diagram: \\usepackage{tikz}, \\usepackage{circuitikz}, \\usepackage{tikz-cd}, or \\usepackage{pgfplots}. For labels using \\text{...} or aligned equations, also load \\usepackage{amsmath}. Declare needed TikZ libraries with \\usetikzlibrary in the preamble.",
     "Place the tikzpicture, circuitikz, or tikzcd environment directly inside document. Do not wrap the diagram in \\[...\\], $$...$$, or an equation environment. Use $...$ for math in TikZ node labels; tikzcd cells already use math mode.",
     "The bundled PGFPlots version is 1.16. For plots, put \\pgfplotsset{compat=1.16} in the preamble; do not request 1.18 or another newer version.",
     "Write explanations outside the block. Author notation, not raw SVG, JavaScript, or external resources.",
@@ -66,4 +66,40 @@ export function checkSource(language: Language, source: string): void {
 
 export function checkSvgSize(svg: string): void {
   if (new TextEncoder().encode(svg).byteLength > SVG_LIMIT) throw new Error("Rendered SVG exceeds the 2 MiB limit.");
+}
+
+/** HOSTED FORK (2026-11): small/fast tutor models often write a bare
+ *  `\begin{tikzpicture}…` (or add `\documentclass`) despite the instructions,
+ *  and the engine then fails with "TeX engine render failed". Repair the
+ *  common shapes before compiling; a complete, correct document is returned
+ *  unchanged.
+ *  - drops `\documentclass`/`\documentstyle` lines (the engine supplies one)
+ *  - adds `\usepackage{…}` for the environments/commands the body uses
+ *  - wraps the body in `\begin{document}…\end{document}` when missing */
+export function normalizeTikz(source: string): string {
+  // HOSTED FORK (2026-11): models wrap plain \draw diagrams in a pgfplots axis
+  // with no \addplot; pgfplots then has no limits and the picture renders empty.
+  // Such an axis is only a wrapper — drop it so TikZ draws in ordinary units.
+  source = source.replace(/[ \t]*\\begin\{axis\}(?:\[[^\]]*\])?[ \t]*\r?\n?([\s\S]*?)[ \t]*\\end\{axis\}[ \t]*\r?\n?/g,
+    (whole, body: string) => /\\addplot|\\addlegendentry|\bcoordinates\b/.test(body) ? whole : body);
+  let text = source.replace(/^[ \t]*\\document(?:class|style)(?:\[[^\]]*\])?\{[^}]*\}[ \t]*\r?\n?/gm, "");
+  const hasDocument = /\\begin\{document\}/.test(text);
+  const needs: [string, RegExp][] = [
+    ["tikz", /\\begin\{tikzpicture\}|\\tikz\b|\\usetikzlibrary/],
+    ["circuitikz", /\\begin\{circuitikz\}/],
+    ["tikz-cd", /\\begin\{tikzcd\}/],
+    ["pgfplots", /\\begin\{axis\}|\\addplot/],
+    ["amsmath", /\\text\{|\\begin\{(?:align|aligned|cases|pmatrix|bmatrix)\*?\}/],
+  ];
+  const loaded = (pkg: string) => new RegExp(`\\\\usepackage(?:\\[[^\\]]*\\])?\\{[^}]*\\b${pkg.replace("-", "\\-")}\\b[^}]*\\}`).test(text);
+  const missing = needs.filter(([pkg, used]) => used.test(text) && !loaded(pkg)).map(([pkg]) => pkg);
+  const compat = missing.includes("pgfplots") && !/\\pgfplotsset\{[^}]*compat/.test(text) ? "\\pgfplotsset{compat=1.16}\n" : "";
+  const packages = missing.map(pkg => `\\usepackage{${pkg}}\n`).join("") + compat;
+  if (hasDocument) return packages ? text.replace(/\\begin\{document\}/, `${packages}\\begin{document}`) : text;
+  // Preamble lines the model wrote above the picture stay in the preamble.
+  const lines = text.split(/\r?\n/);
+  const preamble: string[] = [], body: string[] = [];
+  for (const line of lines) (body.length === 0 && /^\s*(\\usepackage|\\usetikzlibrary|\\pgfplotsset|\\tikzset|\\newcommand|\\definecolor|%|$)/.test(line) ? preamble : body).push(line);
+  const head = [packages.trimEnd(), preamble.join("\n").trim()].filter(Boolean).join("\n");
+  return `${head ? head + "\n" : ""}\\begin{document}\n${body.join("\n").trim()}\n\\end{document}\n`;
 }

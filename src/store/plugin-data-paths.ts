@@ -1,4 +1,7 @@
-import * as fs from "node:fs";
+// HOSTED FORK: the plugin data paths live under the data dir, so they must
+// go through the storage seam (src/store/vfs.ts): on Vercel that seam is
+// Convex, and node:fs would write to a throwaway instance disk.
+import * as fs from "./vfs.ts";
 import * as path from "node:path";
 import { PLUGIN_ID_PATTERN } from "../core/plugins.ts";
 

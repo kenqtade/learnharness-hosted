@@ -125,6 +125,10 @@ const nextConfig: NextConfig = {
 			// Side questions (2026-11-02): the side model's base prompt is read
 			// from disk per ask — a directory no agent-composition read names.
 			"src/agent/prompts/side-chat/*.md",
+			// HOSTED FORK (core plugins): plugin code is loaded at runtime by Node's
+			// native require through this sidecar — invisible to the tracer.
+			"scripts/plugin-loader.cjs",
+			"core-plugins/**/*",
 			"src/agent/image-processing/*.mjs",
 			"src/agent/image-processing/LICENSE",
 			"node_modules/@silvia-odwyer/photon-node/**/*",

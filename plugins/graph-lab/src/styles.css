@@ -1,0 +1,532 @@
+/* Graph Lab — every rule is scoped under .graph-lab / .graph-lab-block.
+   Colours come from host variables (--foreground, --background, --border,
+   --muted-foreground, --accent) so light and dark themes both work. */
+.graph-lab,
+.graph-lab-block {
+  --gl-border: var(--border, rgba(127, 127, 127, 0.32));
+  --gl-muted: var(--muted-foreground, #6b7280);
+  --gl-accent: var(--accent, #2f7ed8);
+  color: var(--foreground, #1f2937);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.graph-lab-host {
+  min-width: 0;
+  width: 100%;
+}
+
+.graph-lab button,
+.graph-lab-block button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 8px;
+  border: 1px solid var(--gl-border);
+  background: var(--background, #fff);
+  color: var(--foreground, #1f2937);
+  padding: 0.32rem 0.6rem;
+  line-height: 1.25;
+}
+.graph-lab button:hover,
+.graph-lab-block button:hover { border-color: var(--gl-accent); }
+.graph-lab button:disabled,
+.graph-lab-block button:disabled { opacity: 0.55; cursor: default; }
+.graph-lab button:focus-visible,
+.graph-lab-block button:focus-visible,
+.graph-lab input:focus-visible,
+.graph-lab select:focus-visible,
+.graph-lab-block input:focus-visible {
+  outline: 2px solid var(--gl-accent);
+  outline-offset: 1px;
+}
+
+.graph-lab input,
+.graph-lab select,
+.graph-lab-block input,
+.graph-lab-block select {
+  font: inherit;
+  color: var(--foreground, #1f2937);
+  background: var(--background, #fff);
+  border: 1px solid var(--gl-border);
+  border-radius: 8px;
+  padding: 0.34rem 0.5rem;
+  min-width: 0;
+}
+.graph-lab input[type="range"],
+.graph-lab-block input[type="range"] { padding: 0; accent-color: var(--gl-accent); }
+
+/* --------------------------------- tabs -------------------------------- */
+.graph-lab-tabs {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--gl-border);
+  padding-bottom: 0.4rem;
+}
+.graph-lab-tab {
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  border-radius: 999px !important;
+  padding: 0.3rem 0.8rem !important;
+  color: var(--gl-muted) !important;
+}
+.graph-lab-tab.is-active {
+  background: var(--gl-accent) !important;
+  border-color: var(--gl-accent) !important;
+  color: var(--background, #fff) !important;
+  font-weight: 600;
+}
+
+/* ------------------------------- workspace ----------------------------- */
+.graph-lab-2d {
+  display: grid;
+  grid-template-columns: minmax(250px, 340px) minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+  min-width: 0;
+}
+.graph-lab-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-width: 0;
+}
+.graph-lab-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.graph-lab-list-title {
+  font-size: 0.95rem;
+  font-weight: 650;
+  margin: 0;
+}
+.graph-lab-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--gl-muted);
+  margin-top: 0.15rem;
+}
+.graph-lab-small-button { font-size: 0.8rem; padding: 0.24rem 0.55rem; }
+.graph-lab-icon-button {
+  padding: 0.15rem 0.42rem !important;
+  min-width: 1.7rem;
+  line-height: 1.1 !important;
+}
+.graph-lab-icon-button.is-active { border-color: var(--gl-accent); }
+
+.graph-lab-rows { display: flex; flex-direction: column; gap: 0.3rem; }
+.graph-lab-row {
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 0.15rem;
+  min-width: 0;
+}
+.graph-lab-row.is-selected { border-color: var(--gl-accent); background: color-mix(in srgb, var(--gl-accent) 7%, transparent); }
+.graph-lab-row-line {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+.graph-lab-row-line input[type="text"] { flex: 1; min-width: 0; }
+.graph-lab-row-error {
+  margin: 0.2rem 0.15rem 0;
+  font-size: 0.78rem;
+  color: #c2410c;
+  overflow-wrap: anywhere;
+}
+.graph-lab-color {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 1.15rem;
+  height: 1.15rem;
+  min-width: 1.15rem;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 50%;
+  overflow: hidden;
+  background: none;
+  cursor: pointer;
+}
+.graph-lab-color::-webkit-color-swatch-wrapper { padding: 0; }
+.graph-lab-color::-webkit-color-swatch { border: 1px solid var(--gl-border); border-radius: 50%; }
+.graph-lab-color::-moz-color-swatch { border: 1px solid var(--gl-border); border-radius: 50%; }
+.graph-lab-dot {
+  display: inline-block;
+  width: 0.65rem;
+  height: 0.65rem;
+  min-width: 0.65rem;
+  border-radius: 50%;
+}
+
+/* -------------------------------- sliders ------------------------------ */
+.graph-lab-sliders { display: flex; flex-direction: column; gap: 0.4rem; }
+.graph-lab-slider {
+  border: 1px solid var(--gl-border);
+  border-radius: 10px;
+  padding: 0.35rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.graph-lab-slider-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+.graph-lab-slider-name { font-variant-numeric: tabular-nums; font-size: 0.83rem; }
+.graph-lab-slider-range { width: 100%; }
+.graph-lab-slider-bounds {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.graph-lab-slider-bound-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--gl-muted);
+}
+.graph-lab-slider-bound { width: 4.2rem; padding: 0.12rem 0.3rem !important; font-size: 0.78rem !important; }
+.graph-lab-slider-play { font-size: 0.78rem; }
+
+/* ------------------------------- analysis ------------------------------ */
+.graph-lab-analysis {
+  border: 1px solid var(--gl-border);
+  border-radius: 10px;
+  padding: 0.45rem 0.55rem;
+  min-height: 2.4rem;
+}
+.graph-lab-analysis-text { margin: 0; font-size: 0.83rem; color: var(--gl-muted); }
+.graph-lab-analysis-list { margin: 0.3rem 0 0; padding-left: 1.1rem; font-size: 0.83rem; }
+.graph-lab-analysis-value { margin: 0.3rem 0 0; font-size: 0.83rem; font-variant-numeric: tabular-nums; }
+.graph-lab-options { display: flex; flex-wrap: wrap; gap: 0.2rem 0.8rem; align-items: center; }
+.graph-lab-options .graph-lab-section-title { flex-basis: 100%; }
+.graph-lab-check-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.83rem;
+  cursor: pointer;
+}
+.graph-lab-check { accent-color: var(--gl-accent); }
+
+/* -------------------------------- canvas ------------------------------- */
+.graph-lab-canvas-wrap {
+  position: relative;
+  border: 1px solid var(--gl-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--background, #fff);
+  height: clamp(340px, 62vh, 760px);
+  min-height: 300px;
+  min-width: 0;
+}
+.graph-lab-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+}
+.graph-lab-graph,
+.graph-lab-stage { position: absolute; inset: 0; }
+.graph-lab-graph { width: 100%; height: 100%; }
+.graph-lab-trace {
+  position: absolute;
+  left: 0.55rem;
+  bottom: 0.55rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--background, #fff) 82%, transparent);
+  border: 1px solid var(--gl-border);
+  font-size: 0.76rem;
+  color: var(--gl-muted);
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  max-width: calc(100% - 4rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.graph-lab-trace-dot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--gl-accent);
+  pointer-events: none;
+}
+.graph-lab-zoom {
+  position: absolute;
+  right: 0.5rem;
+  top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.graph-lab-zoom .graph-lab-icon-button {
+  background: color-mix(in srgb, var(--background, #fff) 88%, transparent) !important;
+  width: 2rem;
+  height: 2rem;
+  padding: 0 !important;
+}
+
+/* ------------------------------- calculus ------------------------------ */
+.graph-lab-calculus {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--gl-border);
+  border-radius: 10px;
+  padding: 0.4rem 0.55rem;
+  margin-top: 0.55rem;
+  font-size: 0.83rem;
+}
+.graph-lab-toolbar-label {
+  font-size: 0.76rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--gl-muted);
+}
+.graph-lab-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.graph-lab-inline input[type="number"] { width: 4.4rem; }
+.graph-lab-hint { margin: 0; color: var(--gl-muted); font-size: 0.8rem; }
+.graph-lab-field {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+.graph-lab-field input { flex: 1; min-width: 0; }
+.graph-lab-function-field { font-variant-numeric: tabular-nums; }
+
+/* ----------------------------- saved graphs ---------------------------- */
+.graph-lab-saved {
+  border: 1px solid var(--gl-border);
+  border-radius: 10px;
+  padding: 0.15rem 0.6rem;
+}
+.graph-lab-saved-summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 0.35rem 0;
+}
+.graph-lab-saved-body { display: flex; flex-direction: column; gap: 0.4rem; padding-bottom: 0.55rem; }
+.graph-lab-saved-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; max-height: 13rem; overflow: auto; }
+.graph-lab-saved-item { display: flex; align-items: center; gap: 0.35rem; }
+.graph-lab-saved-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-lab-saved-empty { color: var(--gl-muted); font-size: 0.83rem; }
+.graph-lab-status { margin: 0; font-size: 0.8rem; color: var(--gl-muted); min-height: 1rem; }
+.graph-lab-status.is-error { color: #c2410c; }
+.graph-lab-small-button.is-danger { border-color: #c2410c; color: #c2410c; }
+
+/* -------------------------------- matrix ------------------------------- */
+.graph-lab-matrix-grid {
+  display: grid;
+  gap: 0.25rem;
+  justify-content: start;
+}
+.graph-lab-matrix-cell { width: 3.4rem; text-align: right; font-variant-numeric: tabular-nums; }
+.graph-lab-matrix-results {
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--gl-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--gl-muted) 6%, transparent);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow: auto;
+  max-height: 22rem;
+  white-space: pre;
+}
+.graph-lab-roots-output {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.6rem;
+  font-size: 0.78rem;
+  color: var(--gl-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------ calculator ----------------------------- */
+.graph-lab-calculator-panel { display: flex; flex-direction: column; gap: 0.6rem; max-width: 44rem; }
+.graph-lab-calculator-host { min-width: 0; }
+.graph-lab-calc {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid var(--gl-border);
+  border-radius: 12px;
+  padding: 0.7rem;
+  background: var(--background, #fff);
+}
+.graph-lab-calc-title { font-weight: 650; font-size: 0.9rem; }
+.graph-lab-calc-rows { display: flex; flex-direction: column; gap: 0.3rem; }
+.graph-lab-calc-row { display: flex; align-items: center; gap: 0.3rem; }
+.graph-lab-calc-row .graph-lab-input { flex: 1; min-width: 0; }
+.graph-lab-calc-sliders { display: flex; flex-direction: column; gap: 0.3rem; }
+.graph-lab-calc-slider {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.graph-lab-calc-slider input[type="range"] { flex: 1; accent-color: var(--gl-accent); }
+.graph-lab-calc-actions { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.graph-lab-calc-canvas {
+  display: block;
+  width: 100%;
+  height: clamp(220px, 34vh, 380px);
+  border: 1px solid var(--gl-border);
+  border-radius: 10px;
+  touch-action: none;
+  cursor: crosshair;
+}
+.graph-lab-calc-trace { font-size: 0.78rem; color: var(--gl-muted); font-variant-numeric: tabular-nums; }
+.graph-lab-calc-display-wrap { display: flex; flex-direction: column; gap: 0.2rem; }
+.graph-lab-calc-display {
+  width: 100%;
+  text-align: right;
+  font-size: 1.15rem !important;
+  font-variant-numeric: tabular-nums;
+}
+.graph-lab-calc-result {
+  text-align: right;
+  font-size: 0.95rem;
+  color: var(--gl-muted);
+  min-height: 1.2rem;
+  overflow-wrap: anywhere;
+}
+.graph-lab-calc-keypad {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+.graph-lab-key {
+  min-height: 2.4rem;
+  font-size: 0.9rem;
+  padding: 0.35rem 0.2rem !important;
+}
+.graph-lab-key--accent {
+  background: var(--gl-accent) !important;
+  border-color: var(--gl-accent) !important;
+  color: var(--background, #fff) !important;
+  font-weight: 650;
+}
+.graph-lab-calc-history-title {
+  font-size: 0.76rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--gl-muted);
+}
+.graph-lab-calc-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-height: 11rem;
+  overflow: auto;
+}
+.graph-lab-history-entry {
+  width: 100%;
+  text-align: left;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.graph-lab-calc-memory { font-size: 0.78rem; color: var(--gl-muted); font-variant-numeric: tabular-nums; }
+.graph-lab-calc-hint { font-size: 0.76rem; color: var(--gl-muted); }
+.graph-lab-matrix-labels { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.82rem; }
+.graph-lab-matrix-labels label { display: inline-flex; align-items: center; gap: 0.3rem; }
+.graph-lab-matrix-pair { display: flex; gap: 1rem; flex-wrap: wrap; }
+.graph-lab-matrix-result {
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--gl-border);
+  border-radius: 10px;
+  font-size: 0.82rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  min-height: 2rem;
+}
+.graph-lab-error { color: #c2410c; margin: 0; }
+
+/* ------------------------------ code block ----------------------------- */
+.graph-lab-block {
+  border: 1px solid var(--gl-border);
+  border-radius: 12px;
+  padding: 0.6rem;
+  background: color-mix(in srgb, var(--background, #fff) 96%, var(--foreground, #000) 4%);
+}
+.graph-lab-block-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+.graph-lab-block-title { font-weight: 650; font-size: 0.9rem; }
+.graph-lab-badge {
+  font-size: 0.72rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--gl-border);
+  color: var(--gl-muted);
+}
+.graph-lab-block-head button { margin-left: auto; }
+.graph-lab-block .graph-lab-2d { grid-template-columns: minmax(0, 1fr); }
+.graph-lab-block .graph-lab-canvas-wrap { height: 320px; min-height: 240px; }
+.graph-lab-block .graph-lab-calculus { display: none; }
+.graph-lab-block-error { margin: 0; color: #c2410c; font-size: 0.85rem; }
+.graph-lab-block-source {
+  margin: 0;
+  padding: 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--gl-border);
+  overflow: auto;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+}
+
+/* ------------------------------- responsive ---------------------------- */
+@media (max-width: 780px) {
+  .graph-lab-2d { grid-template-columns: minmax(0, 1fr); }
+  .graph-lab-canvas-wrap { height: clamp(300px, 48vh, 460px); }
+  .graph-lab-tab { padding: 0.28rem 0.6rem !important; font-size: 0.83rem; }
+  .graph-lab-calc-keypad { gap: 0.25rem; }
+  .graph-lab-key { min-height: 2.2rem; font-size: 0.85rem; }
+}
+@media (max-width: 420px) {
+  .graph-lab-row-line { flex-wrap: wrap; }
+  .graph-lab-row-line input[type="text"] { flex-basis: calc(100% - 5rem); }
+  .graph-lab-inline input[type="number"] { width: 3.6rem; }
+}

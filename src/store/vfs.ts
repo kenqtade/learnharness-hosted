@@ -19,6 +19,12 @@
  * Durability: every write schedules a flush and registers it with
  * Vercel's `waitUntil`, so the function stays alive until Convex has it.
  * `flushStore()` lets callers await it explicitly.
+ *
+ * HOSTED FORK: Convex has no file descriptors, no directories and no
+ * symlinks. The seam models what the stores need: a VIRTUAL descriptor
+ * (open "wx" → write → fsync → close → rename) that buffers the writes and
+ * commits them with the ordinary put path, synthetic stats for the file and
+ * directory keys, and a realpath that resolves to the path itself.
  */
 import realFs from "node:fs";
 import path from "node:path";
@@ -122,6 +128,8 @@ function ensureParent(t: Target) {
 const files = new Map<string, string>();
 const revs = new Map<string, number>();
 const dirs = new Set<string>();
+/** Last write time per key (stat probes on Convex paths). */
+const mtimes = new Map<string, number>();
 let version = -1;
 let lastSync = 0;
 let syncing: Promise<void> | null = null;
@@ -275,14 +283,20 @@ function enoent(syscall: string, p: string): NodeJS.ErrnoException {
 		code: "ENOENT", errno: -2, syscall, path: p,
 	});
 }
+/** HOSTED FORK: the seam raises the same errno codes node:fs does, so the
+ *  stores that branch on them (EEXIST, ENOENT, EBADF) keep working. */
+function fsError(code: string, syscall: string, p: string, detail: string): NodeJS.ErrnoException {
+	const errno = code === "EEXIST" ? -17 : code === "EBADF" ? -9 : code === "EISDIR" ? -21 : code === "ENOTSUP" ? -95 : -2;
+	return Object.assign(new Error(`${code}: ${detail}, ${syscall} '${p}'`), { code, errno, syscall, path: p });
+}
 function isDirKey(key: string): boolean {
 	if (key === "data" || key === "platform" || /^users\/[^/]+$/.test(key) || dirs.has(key)) return true;
 	const prefix = `${key}/`;
 	for (const k of files.keys()) if (k.startsWith(prefix)) return true;
 	return false;
 }
-function put(key: string, data: string) { files.set(key, data); enqueue({ path: key, data }); }
-function del(key: string) { files.delete(key); revs.delete(key); enqueue({ path: key }); }
+function put(key: string, data: string) { files.set(key, data); mtimes.set(key, Date.now()); enqueue({ path: key, data }); }
+function del(key: string) { files.delete(key); revs.delete(key); mtimes.delete(key); enqueue({ path: key }); }
 function toText(data: unknown): string {
 	if (typeof data === "string") return data;
 	if (data instanceof Uint8Array) return Buffer.from(data).toString("utf-8");
@@ -297,6 +311,9 @@ class VDirent {
 }
 
 export type Dirent = realFs.Dirent;
+/** The seam re-exports node:fs's stat type so the stores that write through
+ *  it need no second import of node:fs (the storage-seam guard). */
+export type Stats = realFs.Stats;
 
 /** A member's inherited file falls back to the owner's copy until the
  *  member writes their own (see INHERITED). */
@@ -306,6 +323,74 @@ function readable(t: Target): Target {
 	return own ? t : { key: t.inherit.key, real: t.inherit.real, scoped: false };
 }
 
+// ─── virtual file descriptors (HOSTED FORK) ──────────────────────────────
+
+/**
+ * Convex stores whole files, not byte streams: a Convex path has no real
+ * file descriptor. A VIRTUAL descriptor buffers the writes and commits them
+ * with the ordinary put path when it is closed, so the atomic write pattern
+ * (open "wx" → write → fsync → close → rename) works unchanged on hosted.
+ *
+ * The seam models whole files, so buffered writes replace the file's content
+ * at close. Byte-level partial writes (an offset inside the file) are not
+ * modelled — no store uses them.
+ */
+interface VirtualDescriptor {
+	/** The Convex key this descriptor writes to. */
+	key: string;
+	/** The bytes written so far (UTF-8 text). */
+	buffer: string;
+	/** True when the descriptor accepts writes. */
+	writable: boolean;
+}
+const virtualDescriptors = new Map<number, VirtualDescriptor>();
+/** Virtual descriptors start at 1_000_000: real descriptors are small. */
+let nextVirtualDescriptor = 1_000_000;
+
+interface OpenFlags { read: boolean; write: boolean; exclusive: boolean; truncate: boolean; append: boolean }
+function openFlags(flags: string | number): OpenFlags {
+	if (typeof flags === "number") {
+		const access = flags & 3; // O_RDONLY | O_WRONLY | O_RDWR
+		return { read: access === 0 || access === 2, write: access === 1 || access === 2,
+			exclusive: (flags & 0x80) !== 0, truncate: (flags & 0x200) !== 0, append: (flags & 0x400) !== 0 };
+	}
+	const text = String(flags);
+	return { read: text.includes("r") || text.includes("+"), write: text.includes("w") || text.includes("a") || text.includes("+"),
+		exclusive: text.includes("x"), truncate: text.includes("w"), append: text.includes("a") };
+}
+
+/** Open a file. Convex paths get a virtual descriptor; real paths keep
+ *  node:fs semantics (including "wx" → EEXIST). */
+function openSync(p: realFs.PathOrFileDescriptor, flags: string | number, mode?: number): number {
+	const t = target(String(p));
+	if (!convexMode || t.key === null) return realFs.openSync(t.real as realFs.PathLike, flags as any, mode as any);
+	const key = t.key;
+	const options = openFlags(flags);
+	const present = files.has(key);
+	if (options.exclusive && (present || isDirKey(key))) throw fsError("EEXIST", "open", String(p), "file already exists");
+	if (!options.write && !present && !isDirKey(key)) throw fsError("ENOENT", "open", String(p), "no such file or directory");
+	const buffer = options.append || (options.write && !options.truncate) ? (files.get(key) ?? "") : "";
+	const descriptor = nextVirtualDescriptor++;
+	virtualDescriptors.set(descriptor, { key, buffer, writable: options.write });
+	return descriptor;
+}
+
+/** Close a descriptor. A virtual descriptor commits its buffer with the
+ *  ordinary put path; a real descriptor goes to node:fs. */
+function closeSync(fd: number): void {
+	const descriptor = virtualDescriptors.get(fd);
+	if (!descriptor) return realFs.closeSync(fd);
+	virtualDescriptors.delete(fd);
+	if (descriptor.writable) put(descriptor.key, descriptor.buffer);
+}
+
+/** Flush a descriptor. A virtual descriptor is already durable in the
+ *  in-memory copy — the write lands in Convex when it is closed. */
+function fsyncSync(fd: number): void {
+	if (virtualDescriptors.has(fd)) return;
+	realFs.fsyncSync(fd);
+}
+
 function existsSync(p: realFs.PathLike): boolean {
 	const t = readable(target(String(p)));
 	if (!convexMode || t.key === null) return realFs.existsSync(t.real);
@@ -313,7 +398,12 @@ function existsSync(p: realFs.PathLike): boolean {
 }
 
 function readFileSync(p: realFs.PathOrFileDescriptor, options?: unknown): any {
-	if (typeof p === "number") return realFs.readFileSync(p, options as any);
+	if (typeof p === "number") {
+		const descriptor = virtualDescriptors.get(p);
+		if (!descriptor) return realFs.readFileSync(p, options as any);
+		const encoding = typeof options === "string" ? options : (options as { encoding?: string } | undefined)?.encoding;
+		return encoding ? descriptor.buffer : Buffer.from(descriptor.buffer, "utf-8");
+	}
 	const t = readable(target(String(p)));
 	if (!convexMode || t.key === null) return realFs.readFileSync(t.real, options as any);
 	const data = files.get(t.key);
@@ -323,7 +413,13 @@ function readFileSync(p: realFs.PathOrFileDescriptor, options?: unknown): any {
 }
 
 function writeFileSync(p: realFs.PathOrFileDescriptor, data: unknown, options?: unknown): void {
-	if (typeof p === "number") return realFs.writeFileSync(p, data as any, options as any);
+	if (typeof p === "number") {
+		const descriptor = virtualDescriptors.get(p);
+		if (!descriptor) return realFs.writeFileSync(p, data as any, options as any);
+		if (!descriptor.writable) throw fsError("EBADF", "write", String(p), "bad file descriptor");
+		descriptor.buffer += toText(data);
+		return;
+	}
 	const t = target(String(p));
 	if (!convexMode || t.key === null) { ensureParent(t); return realFs.writeFileSync(t.real, data as any, options as any); }
 	put(t.key, toText(data));
@@ -340,6 +436,7 @@ function mkdirSync(p: realFs.PathLike, options?: unknown): any {
 	const t = target(String(p));
 	if (!convexMode || t.key === null) { ensureParent(t); return realFs.mkdirSync(t.real, options as any); }
 	dirs.add(t.key);
+	mtimes.set(t.key, Date.now());
 	return undefined;
 }
 
@@ -426,13 +523,87 @@ function chmodSync(p: realFs.PathLike, mode: realFs.Mode): void {
 export function seamManaged(p: realFs.PathLike): boolean {
 	return convexMode && target(String(p)).key !== null;
 }
-/** Real-disk probes at the path's real location (a member's space maps). */
-function lstatSync(p: realFs.PathLike): realFs.Stats {
-	return realFs.lstatSync(target(String(p)).real);
+
+/** HOSTED FORK: the synthetic stat of a Convex path. Convex has no
+ *  directories, symlinks or modes; a key is either a file or a directory of
+ *  other keys. The stores only ask isFile/isDirectory/isSymbolicLink, the
+ *  size and the mtime. */
+class VStats {
+	readonly size: number;
+	readonly mode: number;
+	readonly mtimeMs: number;
+	readonly mtime: Date;
+	readonly atimeMs: number;
+	readonly atime: Date;
+	readonly birthtimeMs: number;
+	readonly birthtime: Date;
+	readonly ctimeMs: number;
+	readonly ctime: Date;
+	readonly ino = 0;
+	readonly dev = 0;
+	readonly nlink = 1;
+	readonly uid = 0;
+	readonly gid = 0;
+	readonly rdev = 0;
+	readonly blksize = 4096;
+	readonly blocks = 0;
+	constructor(directory: boolean, size: number, mtimeMs: number) {
+		this.mode = directory ? 0o040755 : 0o100644;
+		this.size = size;
+		this.mtimeMs = mtimeMs;
+		this.mtime = new Date(mtimeMs);
+		this.atimeMs = mtimeMs;
+		this.atime = new Date(mtimeMs);
+		this.birthtimeMs = mtimeMs;
+		this.birthtime = new Date(mtimeMs);
+		this.ctimeMs = mtimeMs;
+		this.ctime = new Date(mtimeMs);
+	}
+	isFile() { return (this.mode & 0o170000) === 0o100000; }
+	isDirectory() { return (this.mode & 0o170000) === 0o040000; }
+	isSymbolicLink() { return false; }
+	isBlockDevice() { return false; }
+	isCharacterDevice() { return false; }
+	isFIFO() { return false; }
+	isSocket() { return false; }
 }
-function statSync(p: realFs.PathLike): realFs.Stats {
-	return realFs.statSync(target(String(p)).real);
+
+/** The synthetic stat of a Convex key, or undefined when it is absent. */
+function convexStat(key: string): VStats | undefined {
+	const data = files.get(key);
+	if (data !== undefined) return new VStats(false, Buffer.byteLength(data, "utf-8"), mtimes.get(key) ?? Date.now());
+	if (isDirKey(key)) return new VStats(true, 0, mtimes.get(key) ?? Date.now());
+	return undefined;
 }
+
+/** HOSTED FORK: a Convex path is probed in Convex, not on the instance disk
+ *  (which is ephemeral and holds nothing). Real paths keep node:fs. */
+function lstatSync(p: realFs.PathLike, options?: { throwIfNoEntry?: boolean }): realFs.Stats {
+	const t = readable(target(String(p)));
+	if (!convexMode || t.key === null) return realFs.lstatSync(t.real, options as any);
+	const stat = convexStat(t.key);
+	if (stat) return stat as unknown as realFs.Stats;
+	if (options?.throwIfNoEntry) return undefined as unknown as realFs.Stats;
+	throw fsError("ENOENT", "lstat", String(p), "no such file or directory");
+}
+function statSync(p: realFs.PathLike, options?: { throwIfNoEntry?: boolean }): realFs.Stats {
+	const t = readable(target(String(p)));
+	if (!convexMode || t.key === null) return realFs.statSync(t.real, options as any);
+	const stat = convexStat(t.key);
+	if (stat) return stat as unknown as realFs.Stats;
+	if (options?.throwIfNoEntry) return undefined as unknown as realFs.Stats;
+	throw fsError("ENOENT", "stat", String(p), "no such file or directory");
+}
+/** HOSTED FORK: a Convex path resolves to itself — there is no symlink to
+ *  follow and no real directory to canonicalize. */
+function realpathSync(p: realFs.PathLike, options?: unknown): string {
+	const t = target(String(p));
+	if (!convexMode || t.key === null) return realFs.realpathSync(t.real, options as any);
+	if (!files.has(t.key) && !isDirKey(t.key)) throw fsError("ENOENT", "realpath", String(p), "no such file or directory");
+	return path.resolve(String(p));
+}
+/** node:fs exposes realpathSync.native; the seam's realpath is already native. */
+(realpathSync as unknown as { native: typeof realpathSync }).native = realpathSync;
 function accessSync(p: realFs.PathLike, mode?: number): void {
 	realFs.accessSync(target(String(p)).real, mode);
 }
@@ -562,12 +733,14 @@ function fsyncDirSync(dir: string): void {
 const vfs = {
 	existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync,
 	readdirSync, renameSync, unlinkSync, rmSync, chmodSync,
-	lstatSync, statSync, accessSync, constants,
+	openSync, closeSync, fsyncSync,
+	lstatSync, statSync, realpathSync, accessSync, constants,
 };
 export {
 	existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync,
 	readdirSync, renameSync, unlinkSync, rmSync, chmodSync,
+	openSync, closeSync, fsyncSync,
 	writeFileAtomicSync, removeLeftoverTemps, fsyncDirSync,
-	lstatSync, statSync, accessSync, constants,
+	lstatSync, statSync, realpathSync, accessSync, constants,
 };
 export default vfs;

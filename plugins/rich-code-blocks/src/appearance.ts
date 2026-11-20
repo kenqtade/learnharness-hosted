@@ -54,8 +54,28 @@ export function prepareInk(svg: SVGSVGElement, language: Language): void {
       const canonical = parser.color === "black" ? "rgb(0, 0, 0)" : parser.color;
       const neutral = palette.find(entry => entry.color === canonical);
       if (neutral) element.setAttribute(attribute, `var(${neutral.variable})`);
+      else if (language === "tikz") {
+        // HOSTED FORK (2026-11): TikZ greys and whites follow the theme too.
+        // Only black used to follow Text, so in dark mode a `fill=white` or
+        // `gray!30` box stayed light while its (now light) label vanished on it.
+        // Every achromatic paint is placed between the theme's Text (black) and
+        // its background (white) by its lightness: light mode is unchanged,
+        // dark mode inverts greys consistently. Colored paint stays authored.
+        const ink = greyInk(canonical);
+        if (ink !== undefined) element.setAttribute(attribute, ink);
+      }
     }
   }
   // SVG's implicit fill is black, regardless of inherited CSS color.
   if (!svg.hasAttribute("fill")) svg.setAttribute("fill", "var(--rich-code-blocks-black)");
+}
+
+/** `color-mix` of theme Text and paper for an opaque grey/white, else undefined. */
+export function greyInk(canonical: string): string | undefined {
+  const match = /^rgb\((\d+), (\d+), (\d+)\)$/.exec(canonical);
+  if (!match) return undefined;
+  const r = Number(match[1]), g = Number(match[2]), b = Number(match[3]);
+  if (Math.max(r, g, b) - Math.min(r, g, b) > 3) return undefined;
+  const ink = Math.round((1 - (r + g + b) / 3 / 255) * 100);
+  return `color-mix(in srgb, var(--rich-code-blocks-black) ${ink}%, var(--rich-code-blocks-paper))`;
 }

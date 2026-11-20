@@ -1,4 +1,8 @@
-import * as fs from "node:fs";
+// HOSTED FORK: the plugin host reads and writes under the data dir (the
+// enable state, the community packages, the plugin data paths), so it goes
+// through the storage seam (src/store/vfs.ts). App-owned code (core-plugins/)
+// stays on the real disk: those paths map to no Convex key.
+import * as fs from "../store/vfs.ts";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -45,6 +49,11 @@ export interface PluginHostDependencies {
 	};
 	/** One process-wide pure converter; no backend services are needed for uploads. */
 	convertDocument?: (request: Request, signal: AbortSignal) => ReturnType<PluginFrontendContext["documents"]["toMarkdown"]>;
+	/** HOSTED FORK: the fs-compatible object a plugin backend's own
+	 *  "fs"/"node:fs" requires resolve to. On a hosted server that is the
+	 *  storage seam, so plugin data lands in Convex instead of the ephemeral
+	 *  instance disk. Unset locally: the backends keep node:fs. */
+	backendFs?: object;
 	onChange?: () => void;
 	onNotification?: (notification: PluginNotification) => void;
 	subscribeEvents?: (listener: (event: ServerEvent) => void) => () => void;
@@ -328,8 +337,10 @@ export function createPluginHost(deps: PluginHostDependencies) {
 					// Next's module graph. Ship scripts/plugin-loader.cjs alongside app.
 					const sidecar = path.join(process.cwd(), "scripts", "plugin-loader.cjs");
 					const nativeRequire = createRequire(sidecar);
-					const loader = nativeRequire(sidecar) as { load(filename: string): PluginBackendModule };
-					pkg.backend = loader.load(entry);
+					const loader = nativeRequire(sidecar) as { load(filename: string, options?: { backendFs?: object; packageDirectory?: string }): PluginBackendModule };
+					// HOSTED FORK: with a backendFs the loader hands the backend the
+					// storage seam instead of node:fs, but only for this package.
+					pkg.backend = loader.load(entry, { backendFs: deps.backendFs, packageDirectory: pkg.directory });
 					if (!pkg.backend || typeof pkg.backend.activate !== "function") throw new Error("Plugin backend must export activate(context)");
 				}
 				const returned = await pkg.backend.activate(ctx);
@@ -571,6 +582,43 @@ export function createPluginHost(deps: PluginHostDependencies) {
 			});
 		},
 		refresh: () => enqueue(async () => { assertOpen(); await initializeInternal(); await discover(readState(stateFile)); change(); }),
+		/** HOSTED FORK (core plugins, 2026-11): on a hosted server every
+		 *  serverless instance keeps its OWN warm host, but the enable state and
+		 *  plugin data are shared (Convex). Another instance may have enabled or
+		 *  disabled a plugin, or changed a plugin's settings, since this host
+		 *  activated. Called once per request (after the store synced):
+		 *  1. apply the stored enable state to this host (never writes it);
+		 *  2. let each active backend re-read its own data through an optional
+		 *     `hosted-sync` operation — e.g. Rich code blocks re-registers the
+		 *     tutor instructions for the families switched on elsewhere.
+		 *  Local/desktop never calls this: one process, one host. */
+		syncHosted: () => enqueue(async () => {
+			assertOpen(); await initializeInternal();
+			const state = readState(stateFile);
+			let changed = false;
+			for (const pkg of packages.values()) {
+				const wanted = state.enabled[pkg.info.id] === true;
+				if (wanted === pkg.info.enabled) continue;
+				changed = true;
+				if (pkg.blocked) { pkg.info.enabled = wanted; continue; }
+				pkg.info.enabled = wanted;
+				if (!wanted) {
+					delete pkg.contributionWarning;
+					const failures = await deactivate(pkg);
+					pkg.info.status = failures.length ? "error" : "disabled";
+					pkg.info.error = failures.length ? `Cleanup: ${failures.join("; ")}` : pkg.restart;
+				} else if (!pkg.activation?.ready) await activate(pkg);
+			}
+			for (const pkg of packages.values()) {
+				const activation = pkg.activation;
+				if (!pkg.info.enabled || !activation?.ready || !live(pkg, activation)) continue;
+				const sync = activation.handlers.get("hosted-sync");
+				if (!sync) continue;
+				try { await sync(undefined); }
+				catch (e) { console.warn(`[plugins] ${pkg.info.id} hosted-sync failed: ${errorText(e)}`); }
+			}
+			if (changed) change();
+		}),
 		async call(id: string, operation: string, input?: unknown): Promise<unknown> {
 			assertOpen();
 			const pkg = get(id), activation = pkg.activation;

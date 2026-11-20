@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { PATHS, GRAPH_FORMAT_FILE, RENDER_SETTINGS_FILE } from "../../config.ts";
 import packageJson from "../../package.json";
@@ -8,6 +7,10 @@ import { createPluginWorkerService } from "../agent/plugin-workers.ts";
 import { registerJobAbort, unregisterJobAbort } from "../agent/subagents/aborts.ts";
 import { createPluginAgentRecordStore } from "../store/plugin-agent-records.ts";
 import { createPluginTaskRecordStore, readPluginTaskRecord, recoverPluginTaskRecords } from "../store/plugin-task-records.ts";
+// HOSTED FORK: the storage seam. On Vercel every file under the data dir
+// lives in Convex; the plugin backends get the seam instead of node:fs.
+import vfs, { convexMode } from "../store/vfs.ts";
+import { keepAlive } from "./keep-alive.ts";
 import corePluginIds from "../../core-plugins.json";
 import { assertGraphFormat } from "../store/graph-format.ts";
 import { createPluginLearningData } from "./plugin-learning.ts";
@@ -24,6 +27,12 @@ import { isTurnRunning } from "./turn-liveness.ts";
 import { compactionInFlight } from "./compaction.ts";
 
 export const pluginDirectory = path.join(/* turbopackIgnore: true */ PATHS.data, "plugins");
+// HOSTED FORK: a hosted serverless function freezes once the response is
+// sent, so background plugin work must be kept alive explicitly. Locally the
+// process stays up and nothing changes.
+const hostedRuntime = convexMode || process.env.VERCEL === "1";
+/** The longest background plugin task a hosted function may run. */
+const HOSTED_WORKER_TIMEOUT_MS = 240_000;
 // Explicitly staged by build-server, not discovered by Next's filesystem tracer.
 const core = {
 	directory: path.join(/* turbopackIgnore: true */ PATHS.root, "core-plugins"),
@@ -45,22 +54,30 @@ function runtime(): Runtime {
 		isBusy: isTurnRunning, isCompacting: compactionInFlight,
 		readMetadata(name) {
 			assertGraphFormat();
-			try { return JSON.parse(fs.readFileSync(name === "format.json" ? GRAPH_FORMAT_FILE : RENDER_SETTINGS_FILE, "utf8")); }
+			try { return JSON.parse(vfs.readFileSync(name === "format.json" ? GRAPH_FORMAT_FILE : RENDER_SETTINGS_FILE, "utf8")); }
 			catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 		},
 	});
 	const installationErrors: Record<string, string> = Object.create(null);
+	// HOSTED FORK: code-running Core plugins are left out of a hosted catalog
+	// entirely — never activated, and no "startup failed" card in Settings.
+	const blocked = hostedPluginBlocks();
 	const host = createPluginHost({
-		directory: pluginDirectory, core, appVersion: packageJson.version, installationErrors,
+		directory: pluginDirectory, core: { ...core, ids: core.ids.filter(id => !Object.hasOwn(blocked, id)) },
+		appVersion: packageJson.version, installationErrors,
 		// The process-global runtime owns one admission slot across all plugins
 		// and every separately compiled Next route module.
 		convertDocument: createPluginDocumentConverter().convert,
+		// HOSTED FORK: only on hosted servers do plugin backends get the
+		// storage seam instead of node:fs. Locally there is no hook at all.
+		...(convexMode ? { backendFs: vfs } : {}),
 		createServices({ manifest, dataDirectory, signal }) {
 			const inference = createPluginInference({ signal, dataDirectory });
 			const agents = createPluginAgentService({
 				store: createPluginAgentRecordStore(path.join(/* turbopackIgnore: true */ dataDirectory, "agents")),
 				engineFor: inference.engineFor, onUsage: inference.onUsage, signal,
 				onChange: () => { if (!signal.aborted) emit("plugin-message", { pluginId: manifest.id, topic: "agents-changed" }); },
+				...(hostedRuntime ? { background: keepAlive } : {}),
 			});
 			const workerActivity = registerPluginWorkerActivity({
 				pluginId: manifest.id, pluginName: manifest.name, signal,
@@ -70,6 +87,7 @@ function runtime(): Runtime {
 				store: createPluginTaskRecordStore(path.join(/* turbopackIgnore: true */ dataDirectory, "tasks")),
 				engineFor: inference.engineFor, onUsage: inference.onUsage, signal,
 				onChange: workerActivity,
+				...(hostedRuntime ? { background: keepAlive, maxTimeoutMs: HOSTED_WORKER_TIMEOUT_MS } : {}),
 			});
 			return { learning, inference: inference.inference, agents, workers,
 				createBackgroundTool(context, definition) {
@@ -112,9 +130,26 @@ function runtime(): Runtime {
  *  operator opts in with LH_PLUGINS=1. Desktop/local: unchanged. Every caller
  *  already treats an unavailable host as "native lesson only". */
 export function pluginsAllowed(env: Record<string, string | undefined> = process.env): boolean {
+	// HOSTED FORK (core plugins, 2026-11): a plugin backend is ONE server-wide
+	// activation with ONE data folder — not per account. With accounts on,
+	// members would share each other's plugin data (decks, settings), so a
+	// multi-user deployment keeps the platform off unless the operator
+	// explicitly accepts that with LH_PLUGINS_MULTI_USER=1.
+	if (env.LH_MULTI_USER === "1" && env.LH_PLUGINS_MULTI_USER !== "1") return false;
 	if (env.LH_PLUGINS === "1") return true;
 	if (env.LH_PLUGINS === "0") return false;
 	return env.LH_PROFILE?.trim() !== "hosted";
+}
+/** HOSTED FORK (core plugins, 2026-11): Core plugins that execute programs
+ *  on the server stay unavailable on a hosted deployment even when the
+ *  platform is on. Coding Questions runs tutor/learner tests as processes with
+ *  the server's permissions — and the server's environment holds deployment
+ *  secrets. LH_PLUGINS_ALLOW_CODE=1 lifts it (operator's explicit choice). */
+export const HOSTED_CODE_PLUGINS = ["coding-questions"] as const;
+export const HOSTED_CODE_PLUGIN_MESSAGE = "Not available on this hosted server: it runs programs on the server, which would expose the deployment's secrets.";
+export function hostedPluginBlocks(env: Record<string, string | undefined> = process.env): Record<string, string> {
+	if (env.LH_PROFILE?.trim() !== "hosted" || env.LH_PLUGINS_ALLOW_CODE === "1") return {};
+	return Object.fromEntries(HOSTED_CODE_PLUGINS.map(id => [id, HOSTED_CODE_PLUGIN_MESSAGE]));
 }
 export const PLUGINS_OFF_MESSAGE = "Plugins are turned off on this hosted server: plugin code (including coding-question tests) would run on the server for every account. The operator can allow them with LH_PLUGINS=1.";
 const refuse = (): never => { throw new PluginHostError(503, PLUGINS_OFF_MESSAGE); };
@@ -133,6 +168,9 @@ export async function getPluginHost(): Promise<Host> {
 	if (!pluginsAllowed()) refuse();
 	const { host, ready } = runtime();
 	await ready;
+	// HOSTED FORK: other instances share the enable state and plugin data
+	// (Convex); bring this warm host up to date before it answers.
+	if (convexMode) await host.syncHosted();
 	return host;
 }
 /** Await startup once; actual factories run synchronously during per-turn Agent construction. */

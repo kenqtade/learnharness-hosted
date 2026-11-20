@@ -464,3 +464,23 @@ test("document conversion preserves ordinary conversion errors and host disposal
 	await f.host.dispose(); assert.equal(captured.aborted, true);
 	pending.resolve(documentResult); await rejected;
 });
+
+// HOSTED FORK (core plugins, 2026-11): two warm serverless instances share the
+// enable state and the plugin data; syncHosted brings the other one up to date.
+test("syncHosted applies another instance's enable/disable and calls hosted-sync", async t => {
+	const f = fixture(t);
+	f.plugin("example", {}, "let n = 0; exports.activate = ctx => { ctx.handle('hosted-sync', () => { n++; }); ctx.handle('syncs', () => n); };");
+	const other = createPluginHost(f.deps); t.after(() => other.dispose());
+	await Promise.all([f.host.initialize(), other.initialize()]);
+	await other.setEnabled("example", true);
+	assert.equal(f.host.list()[0]!.enabled, false, "no change before the sync");
+	await f.host.syncHosted();
+	assert.equal(f.host.list()[0]!.status, "active");
+	const before = await f.host.call("example", "syncs") as number;
+	await f.host.syncHosted();
+	assert.equal(await f.host.call("example", "syncs"), before + 1, "each sync re-reads the backend's data");
+	await other.setEnabled("example", false);
+	await f.host.syncHosted();
+	assert.equal(f.host.list()[0]!.status, "disabled");
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.root, "plugins-state.json"), "utf8")), { version: 1, enabled: { example: false } }, "sync never writes the state");
+});

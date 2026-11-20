@@ -6,7 +6,7 @@
 import "./helpers/isolated-data-dir.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { disabledPluginHost, PLUGINS_OFF_MESSAGE, pluginsAllowed } from "../src/server/plugins.ts";
+import { disabledPluginHost, hostedPluginBlocks, HOSTED_CODE_PLUGIN_MESSAGE, PLUGINS_OFF_MESSAGE, pluginsAllowed } from "../src/server/plugins.ts";
 import { createPluginTransport } from "../src/server/plugin-transport.ts";
 
 describe("hosted plugin gate", () => {
@@ -16,6 +16,16 @@ describe("hosted plugin gate", () => {
 		assert.equal(pluginsAllowed({ LH_PROFILE: "local" }), true);
 		assert.equal(pluginsAllowed({ LH_PROFILE: "hosted", LH_PLUGINS: "1" }), true);
 		assert.equal(pluginsAllowed({ LH_PLUGINS: "0" }), false);
+	});
+	it("HOSTED FORK: multi-user keeps plugins off (one data folder for every account) unless explicitly accepted", () => {
+		assert.equal(pluginsAllowed({ LH_PROFILE: "hosted", LH_PLUGINS: "1", LH_MULTI_USER: "1" }), false);
+		assert.equal(pluginsAllowed({ LH_MULTI_USER: "1" }), false);
+		assert.equal(pluginsAllowed({ LH_PROFILE: "hosted", LH_PLUGINS: "1", LH_MULTI_USER: "1", LH_PLUGINS_MULTI_USER: "1" }), true);
+	});
+	it("HOSTED FORK: code-running core plugins are blocked on hosted even with the platform on", () => {
+		assert.deepEqual(hostedPluginBlocks({ LH_PROFILE: "hosted", LH_PLUGINS: "1" }), { "coding-questions": HOSTED_CODE_PLUGIN_MESSAGE });
+		assert.deepEqual(hostedPluginBlocks({ LH_PROFILE: "hosted", LH_PLUGINS: "1", LH_PLUGINS_ALLOW_CODE: "1" }), {});
+		assert.deepEqual(hostedPluginBlocks({}), {}, "desktop/local: unchanged");
 	});
 	it("the disabled host: an empty catalog, every action refused with 503 (unavailable)", async () => {
 		const transport = createPluginTransport({ getHost: async () => disabledPluginHost, directory: "" });

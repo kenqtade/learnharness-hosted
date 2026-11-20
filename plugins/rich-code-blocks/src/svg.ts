@@ -128,7 +128,7 @@ export function sanitizeSvg(source: string, label: string, language?: Language):
   if (!svg.getAttribute("viewBox")) {
     const width = parseFloat(svg.getAttribute("width") ?? "");
     const height = parseFloat(svg.getAttribute("height") ?? "");
-    if (!(Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0)) throw new Error("SVG dimensions are missing or invalid.");
+    if (!(Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0)) throw new Error(language === "tikz" ? "The diagram rendered empty — nothing visible was drawn." : "SVG dimensions are missing or invalid.");
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   }
   // Keep only a natural width; CSS derives height from viewBox when fitting.

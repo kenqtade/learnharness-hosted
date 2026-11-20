@@ -1,5 +1,5 @@
 import type { PluginCodeBlockProps } from "learnharness-plugin-api";
-import { CACHE_BYTES, CACHE_ENTRIES, LABELS, checkSource, checkSvgSize, type Language } from "./contract.ts";
+import { CACHE_BYTES, CACHE_ENTRIES, LABELS, checkSource, checkSvgSize, normalizeTikz, type Language } from "./contract.ts";
 import { sanitizeSvg } from "./svg.ts";
 import { TexRunner } from "./tex-runner.ts";
 
@@ -101,7 +101,7 @@ export class RenderService {
         else if (language === "abc") output = await abc(block.source, controller.signal);
         else if (language === "tikz") {
           this.tex ??= new TexRunner(new URL("./assets/tex-worker.js", import.meta.url), new URL("./assets/tex/", import.meta.url));
-          output = await this.tex.render(block.source, controller.signal);
+          output = await this.tex.render(normalizeTikz(block.source), controller.signal);
         } else throw new Error("Unsupported code-block language.");
       }
       if (this.disposed || controller.signal.aborted) { dispose(); return dispose; }

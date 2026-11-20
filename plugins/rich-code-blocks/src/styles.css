@@ -6,6 +6,8 @@
   --rich-code-blocks-black: var(--foreground, currentColor);
   --rich-code-blocks-carbon: var(--foreground, currentColor);
   --rich-code-blocks-hydrogen: var(--foreground, currentColor);
+  /* TikZ white/grey paint mixes toward the theme background (see greyInk). */
+  --rich-code-blocks-paper: var(--background, #ffffff);
   min-width: 0;
   max-width: 100%;
 }
