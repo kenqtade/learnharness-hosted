@@ -509,7 +509,7 @@ function mountBankSettings(ctx: PluginFrontendContext, container: HTMLElement, s
         h("h3", {}, "Question Bank model"),
         h("p", { class: "ep-hint" }, settings.modelOverride ? `Using ${settings.modelOverride.provider}/${settings.modelOverride.id} for writing, solving and checking questions.` : "Following the app's cheap model slot (Settings → Agent → Models). Pick a model to override it for Exam Prep only."),
         pickerHost,
-        settings.modelOverride ? h("button", { type: "button", class: "ep-btn", onclick: () => save({ modelOverride: null }, "Back to the cheap model slot.") }, "Use the app default") : null,
+        settings.modelOverride ? h("button", { type: "button", class: "ep-btn", onclick: () => save({ modelOverride: null }, "Back to the cheap model slot.") }, "Use the app default") : "",
         h("h3", {}, "Web search"),
         h("p", { class: "ep-hint" }, settings.hasSearchKey ? "A Tavily API key is saved (it never leaves the server)." : "Without a key, Find on the web uses a free keyless search. A Tavily key (free tier available) gives better results."),
       );
