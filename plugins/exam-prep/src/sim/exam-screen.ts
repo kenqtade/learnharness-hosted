@@ -205,7 +205,7 @@ export function mountExamScreen(ctx: PluginFrontendContext, host: HTMLElement, i
       timer,
       h("div", { class: "ep-exam-top-right" }, toolButtons,
         a().setup.mode === "practice" ? h("button", { type: "button", class: "ep-btn ep-btn-ghost", onclick: async () => { await flushSaves(); await refresh(await ctx.call<AttemptView>("sim.pause", { id: a().id })); } }, "Pause") : null,
-        h("button", { type: "button", class: "ep-btn ep-btn-ghost", title: "Full screen", onclick: () => { if (document.fullscreenElement) void document.exitFullscreen(); else void root.requestFullscreen?.().catch(() => undefined); } }, "⛶"),
+        h("button", { type: "button", class: "ep-btn ep-btn-ghost", title: "Full screen", onclick: () => { if (document.fullscreenElement) void document.exitFullscreen(); else void root.requestFullscreen?.().catch(() => undefined); } }, "Full screen"),
         h("button", { type: "button", class: "ep-btn ep-btn-ghost", onclick: async () => {
           if (!confirm(a().setup.mode === "strict" ? "Leave the exam? The clock keeps running (as in the real test); you can come back from Exam Simulator." : "Leave the test? Your answers are saved; you can resume later.")) return;
           await flushSaves(); cleanup(); done(view);

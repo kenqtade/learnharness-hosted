@@ -80,7 +80,7 @@ export function mount2D(host: HTMLElement, options: PanelOptions): () => void {
   function updateErrors(): void {
     const errors = new Map(panel.errors.map(entry => [entry.id, entry.message]));
     for (const [id, nodes] of rowNodes) {
-      const message = errors.get(id);
+      const message = nodes.input.value.trim() ? errors.get(id) : undefined;
       nodes.error.hidden = !message;
       nodes.error.textContent = message ?? "";
     }
