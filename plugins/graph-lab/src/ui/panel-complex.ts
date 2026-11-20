@@ -2,7 +2,7 @@
 // images under f(z), and nth roots / roots of unity.
 import { createExpression, GRAPH_COLORS, type GraphState } from "../engine/state.ts";
 import {
-  compileComplexFunction, evaluateComplex, formatComplex, gridImages, nthRoots,
+  compileComplexFunction, domainColoring, evaluateComplex, formatComplex, gridImages, nthRoots,
   type ComplexValue,
 } from "../engine/complex.ts";
 import {

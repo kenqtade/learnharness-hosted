@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { marchSquares, maskAt, maskRects, pointCount, sampleExplicit, sampleParametric, samplePolar, sampleRegion, sampleRow } from "../src/engine/sample.ts";
 import { buildScope, collectSliders, parseExpression } from "../src/engine/expressions.ts";
 
-const view = { x: [-5, 5], y: [-5, 5] };
+const view: { x: [number, number]; y: [number, number] } = { x: [-5, 5], y: [-5, 5] };
 
 test("explicit curves are sampled smoothly", () => {
   const segments = sampleExplicit(x => x * x, view, 400, 300);

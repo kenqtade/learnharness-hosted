@@ -4,7 +4,7 @@
 import { axisLabels, toScreen, type ViewRect, type Viewport } from "./viewport.ts";
 import { maskRects, type RegionMask, type SamplePoint, type Segments } from "./sample.ts";
 import type { RgbaImage } from "./complex.ts";
-import { project, triangles, type Camera, type Mesh, type Triangle } from "./surface.ts";
+import { painterSort, project, triangles, type Camera, type Mesh, type Triangle } from "./surface.ts";
 
 export interface Palette {
   foreground: string;

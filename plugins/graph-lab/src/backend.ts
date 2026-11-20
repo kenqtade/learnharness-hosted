@@ -302,7 +302,7 @@ export function activate(ctx: PluginBackendContext): () => void {
     if (input.degrees !== undefined && typeof input.degrees !== "boolean") fail("degrees must be true or false.");
     return settings.change(draft => {
       if (mode !== undefined) draft.defaultMode = mode as GraphMode;
-      if (input.degrees !== undefined) draft.degrees = input.degrees;
+      if (typeof input.degrees === "boolean") draft.degrees = input.degrees;
       return { revision: draft.revision + 1, defaultMode: draft.defaultMode, degrees: draft.degrees };
     });
   }));

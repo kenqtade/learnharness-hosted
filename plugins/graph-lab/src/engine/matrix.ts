@@ -347,12 +347,13 @@ export function eigenLines(matrix: Matrix): EigenLine[] {
   const lines: EigenLine[] = [];
   values.forEach((value, index) => {
     if (Math.abs(value.im) > 1e-9) return;
-    const vector = vectors[index]!;
-    const length = Math.hypot(vector.re, vector.im);
+    const vector = vectors[index] ?? [];
+    const vx = vector[0]?.re ?? 0, vy = vector[1]?.re ?? 0;
+    const length = Math.hypot(vx, vy);
     if (length < 1e-9) return;
     lines.push({
       point: { x: 0, y: 0 },
-      direction: { x: vector.re / length, y: vector.im / length },
+      direction: { x: vx / length, y: vy / length },
       eigenvalue: value.re,
     });
   });

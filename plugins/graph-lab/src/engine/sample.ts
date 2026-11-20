@@ -166,7 +166,7 @@ export function sampleParametric(
   const screen = (p: SamplePoint) => toScreen(viewport, p.x, p.y);
   const segments: Segments = [];
   let current: SamplePoint[] = [];
-  let previous: { point: SamplePoint; screen: { x: number; y: number } } | undefined;
+  let previous: { point: SamplePoint; screen: { x: number; y: number }; t: number } | undefined;
 
   const refine = (t0: number, p0: SamplePoint, s0: { x: number; y: number }, t1: number, p1: SamplePoint, s1: { x: number; y: number }, depth: number): boolean => {
     const tm = (t0 + t1) / 2;

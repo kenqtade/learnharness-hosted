@@ -57,7 +57,7 @@ export async function activate(ctx: PluginFrontendContext): Promise<() => void> 
       key: "defaultMode", type: "dropdown", label: "Default mode", value: value.defaultMode,
       options: MODES.map(entry => ({ value: entry.value, label: entry.label })),
       description: "The tab Graph Lab opens on. Existing graphs keep their own mode.",
-      async onChange(defaultMode) { await save({ defaultMode }); },
+      async onChange(defaultMode) { await save({ defaultMode: defaultMode as GraphMode }); },
     },
     {
       key: "degrees", type: "toggle", label: "Degrees", value: value.degrees,

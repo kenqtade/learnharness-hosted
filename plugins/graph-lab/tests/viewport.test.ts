@@ -18,7 +18,7 @@ test("world <-> screen round trips", () => {
 });
 
 test("pan follows the drag and zoom keeps the anchor fixed", () => {
-  const view = { x: [-10, 10], y: [-10, 10] };
+  const view: { x: [number, number]; y: [number, number] } = { x: [-10, 10], y: [-10, 10] };
   const size = { width: 400, height: 400 };
   const panned = panView(view, 40, 20, size);
   assert.deepEqual(panned.x, [-12, 8]);

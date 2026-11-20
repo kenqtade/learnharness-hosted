@@ -12,7 +12,7 @@ declare module "mathjs/lib/browser/math.js" {
   }
   export interface Fraction {
     s: bigint | number; n: bigint | number; d: bigint | number;
-    abs(): Fraction; neg(): Fraction; add(x: Fraction | number): Fraction; sub(x: Fraction | number): Fraction;
+    abs(): Fraction; neg(): Fraction; clone(): Fraction; add(x: Fraction | number): Fraction; sub(x: Fraction | number): Fraction;
     mul(x: Fraction | number): Fraction; div(x: Fraction | number): Fraction; equals(x: Fraction | number): boolean;
     valueOf(): number; toFraction(excludeWhole?: boolean): string; toString(): string;
   }
