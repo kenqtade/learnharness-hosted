@@ -320,6 +320,7 @@ export function activateBankBackend(ctx: PluginBackendContext): BankApi {
       if (job && (job.status === "queued" || job.status === "running")) void pipeline.reconcile(id).catch(() => undefined);
       return job ? publicJob(job) : undefined;
     },
+    resolveModel: () => pipeline.resolveModel(),
     recordResponses: responses => {
       if (!responses.length) return;
       store.change(draft => {

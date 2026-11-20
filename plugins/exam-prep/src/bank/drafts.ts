@@ -25,6 +25,7 @@ export interface RawDraft {
   format?: QuestionFormat;
   difficulty?: number;
   skillId?: string;
+  subject?: string;
   tags?: string[];
 }
 

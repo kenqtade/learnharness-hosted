@@ -127,6 +127,8 @@ export interface BankApi {
   job(id: string): BankJob | undefined;
   /** Record that a learner answered (for per-skill mastery and question stats). */
   recordResponses(responses: { questionId: string; correct: boolean | null; seconds: number }[]): void;
+  /** The model the bank uses (its override, else the host's cheap slot). Throws a learner-readable error. */
+  resolveModel(): Promise<import("learnharness-plugin-api").PluginModelSpec>;
 }
 
 // ── Exam profiles ──────────────────────────────────────────────────────────
@@ -164,6 +166,8 @@ export interface ScoreScale {
   perSection?: Record<string, { min: number; max: number; curve?: [number, number][] }>;
   combine?: "sum" | "average" | "none";
   label?: string;                   // "Total score", "Band", "Grade"
+  /** Grade labels by minimum total (on the final scale), highest first is not required. */
+  bands?: { min: number; label: string }[];
 }
 
 export interface ExamProfile {
@@ -190,6 +194,10 @@ export interface AttemptSetup {
   timeMultiplier: number;           // 1, 1.5, 2; 0 = untimed
   tools: ToolId[];                  // effective tool list (strict = profile's)
   questionCountScale?: number;      // 0.25…1 for short custom tests
+  /** Fill gaps with unverified bank questions (default true in practice, false in strict). */
+  allowUnverified?: boolean;
+  /** Ask the bank to write missing questions before the test starts. */
+  generate?: boolean;
 }
 
 export interface AttemptResponse {
@@ -200,6 +208,8 @@ export interface AttemptResponse {
   seconds: number;
   correct?: boolean | null;         // null = needs rubric grading
   points?: number;
+  /** Rubric grader feedback (essays). */
+  feedback?: string;
 }
 
 export interface AttemptModuleState {
@@ -209,6 +219,12 @@ export interface AttemptModuleState {
   startedAt?: string;
   submittedAt?: string;
   timeLimitSeconds: number;         // 0 = untimed
+  pausedAt?: string;                // practice mode only
+  pausedSeconds?: number;
+  /** Adaptive routing result for this module ("easier" / "harder"). */
+  route?: "easier" | "harder";
+  /** Target count when the bank could not fill every slot. */
+  planned?: number;
 }
 
 export interface Attempt {
@@ -221,8 +237,15 @@ export interface Attempt {
   current: { module: number; question: number };
   responses: Record<string, AttemptResponse>;
   notes?: string;
+  /** Rubric grading tasks (question id → worker task id). */
+  grading?: Record<string, string>;
+  /** Break between sections: resume at this time (or earlier by choice). */
+  breakUntil?: string;
   score?: {
     total?: number;
+    band?: string;
+    /** Rubric questions still waiting for grading. */
+    pending?: number;
     sections: Record<string, { raw: number; max: number; scaled?: number }>;
     skills: Record<string, { correct: number; total: number }>;
   };

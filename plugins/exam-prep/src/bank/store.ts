@@ -52,6 +52,8 @@ export interface JobPlan {
   questions: Question[];
   /** Existing question ids targeted by a `verify` job. */
   targets?: string[];
+  /** Learner-readable notes about drafts that were dropped. */
+  skipped?: string[];
 }
 
 export interface StoredJob extends BankJob { plan?: JobPlan }

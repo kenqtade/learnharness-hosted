@@ -142,6 +142,7 @@ export interface Pipeline {
   reconcile(jobId: string): Promise<StoredJob | undefined>;
   list(): StoredJob[];
   cancel(jobId: string): StoredJob;
+  resolveModel(): Promise<PluginModelSpec>;
 }
 
 const isTerminal = (status: string) => status === "succeeded" || status === "failed";
@@ -166,7 +167,7 @@ export function createPipeline({ ctx, store, env = {}, notify }: PipelineOptions
     const entry = catalog.models.find(model => model.provider === pin.model!.provider && model.id === pin.model!.id);
     if (!entry) return fail("The selected Question Bank model is unavailable. Pick another model in Question Bank → Settings.");
     const thinking = settings.modelOverride?.thinkingLevel ?? (settings.modelOverride ? undefined : pin.thinkingLevel);
-    if (thinking && entry.supportedLevels.length && !entry.supportsLevel?.(thinking) && !entry.supportedLevels.includes(thinking))
+    if (thinking && entry.supportedLevels.length && !(entry.supportedLevels as readonly string[]).includes(thinking))
       return fail("The selected Question Bank model does not support that thinking level. Choose another model.");
     return { ...pin.model, ...(thinking ? { thinkingLevel: thinking } : {}) } as PluginModelSpec;
   }
@@ -308,7 +309,7 @@ export function createPipeline({ ctx, store, env = {}, notify }: PipelineOptions
 
   function importPlan(request: ImportRequest): JobPlan {
     if (!request.markdown?.trim()) return fail("That file had no readable text.");
-    const exam = request.exam;
+    const exam = request.exam ?? fail("Choose an exam for this paper.");
     const skillIdValue = request.skill;
     const skill = skillIdValue ? skillOrThrow(skillIdValue) : undefined;
     const subject = skill ? subjectForSkill(exam, skill.id) : subjectForSkill(exam, skillIdValue ?? "");
@@ -459,7 +460,7 @@ export function createPipeline({ ctx, store, env = {}, notify }: PipelineOptions
     if (job.kind === "author") return { model: job.plan?.model ? modelName(job.plan.model) : undefined };
     const request = job.request as SourceRequest & Partial<ImportRequest> & { pages?: PageRecord[] };
     if (job.kind === "import") return { title: request.name ?? "Upload" };
-    const page = job.plan?.steps.map(step => step.result as PageRecord | undefined).find(result => result && draft.__page === undefined) ?? undefined;
+    const page = job.plan?.steps.map(step => step.result as PageRecord | undefined).find(result => result !== undefined && (draft as { __page?: unknown }).__page === undefined) ?? undefined;
     void page;
     return { title: request.topic ?? request.name };
   }
@@ -492,7 +493,7 @@ export function createPipeline({ ctx, store, env = {}, notify }: PipelineOptions
     const format = draft.format ?? "mcq";
     if (format === "numeric") {
       const value = parseNumber(String(answer ?? "").trim());
-      if (value === undefined) fail("The proposed numeric key could not be read as a number.");
+      if (value === undefined) return fail("The proposed numeric key could not be read as a number.");
       return { kind: "numeric", value };
     }
     if (format === "short-answer" || format === "cloze") {
@@ -601,7 +602,7 @@ export function createPipeline({ ctx, store, env = {}, notify }: PipelineOptions
     catch (error) { failJob(jobId, (error as Error).message); return undefined; }
   }
 
-  function ensureTask(step: JobStep, model: PluginModelSpec, plan: JobPlan): { status: string; result?: unknown; error?: { message?: string } } {
+  function ensureTask(step: JobStep, model: PluginModelSpec, plan: JobPlan): { id: string; status: string; result?: unknown; error?: { message?: string } } {
     const requestId = step.requestId!;
     const existing = ctx.workers.list().find(task => task.requestId === requestId)
       ?? (step.taskId ? safeGet(step.taskId) : undefined);
@@ -858,6 +859,7 @@ export function createPipeline({ ctx, store, env = {}, notify }: PipelineOptions
     reconcile: async jobId => { activeJobId = jobId; try { await reconcile(jobId); } finally { activeJobId = undefined; } return store.job(jobId); },
     list: () => Object.values(store.get().jobs).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     cancel,
+    resolveModel,
   };
 }
 

@@ -36,7 +36,7 @@ const fail = (message: string): never => { throw new Error(message); };
 
 function envFetch(env: SourcingEnv): FetchLike {
   const impl = env.fetchImpl ?? (globalThis.fetch as FetchLike | undefined);
-  if (typeof impl !== "function") fail("This environment does not provide fetch().");
+  if (typeof impl !== "function") return fail("This environment does not provide fetch().");
   return impl;
 }
 
