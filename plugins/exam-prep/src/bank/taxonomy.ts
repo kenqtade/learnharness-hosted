@@ -668,3 +668,19 @@ export function skillsOf(exam: string, stored: Record<string, Skill>): Skill[] {
   return Object.values(stored).filter(s => s.exam === exam)
     .sort((a, b) => a.domain.localeCompare(b.domain) || a.name.localeCompare(b.name));
 }
+
+/** "sat.math.algebra.linear-equations" → its exam and section (undefined when not a known exam section). */
+export function parseSkillId(id: string): { exam: string; section: string; domain: string; name: string } | undefined {
+  const [exam, section, domain, ...rest] = id.split(".");
+  if (!exam || !section || !domain || !rest.length) return undefined;
+  const entry = BUILT_IN_EXAMS.find(e => e.id === exam);
+  if (entry && !entry.sections.some(s => s.id === section)) return undefined;
+  return { exam, section, domain, name: rest.join(".") };
+}
+
+/** The subject (e.g. "Math") a skill belongs to; falls back to its section id for custom exams. */
+export function subjectForSkill(exam: string, id: string): string {
+  const parsed = parseSkillId(id);
+  const entry = BUILT_IN_EXAMS.find(e => e.id === (parsed?.exam ?? exam));
+  return entry?.sections.find(s => s.id === parsed?.section)?.subject ?? parsed?.section ?? "General";
+}
