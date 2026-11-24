@@ -22,6 +22,7 @@
 		"test": "NODE_ENV=test tsx --test tests/*.test.ts tests/*.test.tsx",
 		"lint": "eslint .",
 		"typecheck": "tsc --noEmit",
+		"convex:routes": "node scripts/gen-convex-routes.mjs",
 		"plugins:setup": "node scripts/setup-plugins.mjs",
 		"plugins:build-authoring": "node scripts/build-plugin-authoring.mjs",
 		"plugins:build-core": "node scripts/build-core-plugins.mjs",
