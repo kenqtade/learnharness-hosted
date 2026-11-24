@@ -1,0 +1,183 @@
+# OpenCode works on the Convex-hosting migration (issue 4, branch convex-host).
+# - every 3 hours (free on public repos)
+# - on demand: Actions → "Convex migration (OpenCode)" → Run workflow
+# - when the repo OWNER comments "/oc <instructions>" on the issue
+# Pause: add the label "paused" to the issue (or close it). Done: progress file says ALL PHASES DONE.
+name: Convex migration (OpenCode)
+
+on:
+  schedule:
+    - cron: "23 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      instructions:
+        description: "Extra instructions for this run (optional)"
+        required: false
+        default: ""
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: convex-migration
+  cancel-in-progress: false
+
+env:
+  ISSUE: "4"
+  BRANCH: convex-host
+  MODEL: opencode/big-pickle
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  work:
+    if: >-
+      github.event_name != 'issue_comment' || (
+        github.event.issue.number == 4 &&
+        github.event.comment.author_association == 'OWNER' &&
+        (startsWith(github.event.comment.body, '/oc') || startsWith(github.event.comment.body, '/opencode')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: convex-host
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Should this run?
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          state=$(gh issue view "$ISSUE" --json state,labels -q '.state + " " + ([.labels[].name] | join(","))')
+          echo "issue: $state"
+          if grep -q "ALL PHASES DONE" docs/convex-migration-progress.md; then echo "run=no" >> "$GITHUB_OUTPUT"; echo "All phases done."; exit 0; fi
+          if [ "${{ github.event_name }}" = "schedule" ] && { echo "$state" | grep -q "^CLOSED" || echo "$state" | grep -q "paused"; }; then echo "run=no" >> "$GITHUB_OUTPUT"; echo "Paused or closed."; exit 0; fi
+          echo "run=yes" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then gh api -X POST "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes >/dev/null || true; fi
+
+      - uses: actions/setup-node@v7
+        if: steps.gate.outputs.run == 'yes'
+        with:
+          node-version: "26"
+          cache: npm
+
+      - name: Install
+        if: steps.gate.outputs.run == 'yes'
+        run: |
+          npm ci --no-audit --no-fund
+          npm run plugins:setup
+          npm i -g opencode-ai@latest
+
+      - name: Typecheck before (for the prompt)
+        if: steps.gate.outputs.run == 'yes'
+        run: |
+          (npx tsc --noEmit 2>&1 || true) | tail -60 > /tmp/tsc-before.txt
+          echo "errors before: $(grep -c 'error TS' /tmp/tsc-before.txt || true)"
+
+      - name: Run OpenCode
+        if: steps.gate.outputs.run == 'yes'
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          DISPATCH_INSTRUCTIONS: ${{ github.event.inputs.instructions }}
+        run: |
+          mkdir -p ~/.config/opencode
+          cat > ~/.config/opencode/opencode.json <<'JSON'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "model": "opencode/big-pickle",
+            "small_model": "opencode/big-pickle",
+            "autoupdate": false,
+            "share": "disabled",
+            "permission": {
+              "edit": "allow",
+              "webfetch": "allow",
+              "external_directory": "deny",
+              "bash": {
+                "*": "allow",
+                "git push*": "deny", "git checkout*": "deny", "git switch*": "deny",
+                "git reset --hard*": "deny", "git rebase*": "deny", "git commit*": "deny",
+                "*convex deploy*": "deny", "*vercel*": "deny",
+                "npm run build*": "deny", "*next build*": "deny", "sudo*": "deny"
+              }
+            }
+          }
+          JSON
+          {
+            echo "You are migrating LearnHarness so the hosted app runs entirely on Convex (no Vercel)."
+            echo "The spec is docs/convex-hosting-plan.md. Progress and notes are in docs/convex-migration-progress.md. Read both first, then AGENTS.md."
+            echo
+            echo "Rules for this run:"
+            echo "- Work on the CURRENT PHASE in the progress file. If it is finished and typecheck passes, tick it, move 'Current phase' on, and continue with the next phase while time remains."
+            echo "- You have about 3.5 hours. Stop earlier rather than leave the code broken."
+            echo "- Do not commit or push; the workflow commits everything you leave in the working tree."
+            echo "- Do not run npm run build, next build, convex deploy or vercel. Running single test files (npx tsx --test tests/x.test.ts) is fine."
+            echo "- Keep local mode (no Convex) working; put new behaviour behind LH_HOST=convex or in convex/."
+            echo "- Never write secrets into files."
+            echo "- Before you finish: run 'npx tsc --noEmit' and fix what you broke, then update docs/convex-migration-progress.md (ticks; a dated note at the top of 'Notes and open problems' saying what you did, what is half-done, and what to do next)."
+            echo
+            echo "Typecheck result at the start of this run (tail):"
+            echo '```'; cat /tmp/tsc-before.txt; echo '```'
+            if [ -n "$COMMENT_BODY$DISPATCH_INSTRUCTIONS" ]; then
+              echo
+              echo "OWNER INSTRUCTIONS FOR THIS RUN (highest priority, follow them even if they change the plan):"
+              printf '%s\n%s\n' "$COMMENT_BODY" "$DISPATCH_INSTRUCTIONS"
+            fi
+          } > /tmp/prompt.md
+          set +e
+          timeout 215m opencode run -m "$MODEL" "$(cat /tmp/prompt.md)" > /tmp/opencode.log 2>&1
+          echo "opencode exit: $?"
+          tail -c 3000 /tmp/opencode.log
+
+      - name: Verify
+        if: steps.gate.outputs.run == 'yes'
+        run: |
+          set +e
+          npx tsc --noEmit > /tmp/tsc.txt 2>&1; echo "TSC=$?" >> /tmp/verify.env
+          npx eslint . > /tmp/lint.txt 2>&1; echo "LINT=$?" >> /tmp/verify.env
+          NODE_ENV=test timeout 25m npx tsx --test tests/*.test.ts tests/*.test.tsx > /tmp/test.txt 2>&1
+          echo "TESTS='$(grep -E '^# (pass|fail) ' /tmp/test.txt | tr '\n' ' ')'" >> /tmp/verify.env
+          cat /tmp/verify.env
+
+      - name: Commit and push
+        if: steps.gate.outputs.run == 'yes'
+        id: push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "opencode-migration[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git reset -q -- .opencode 2>/dev/null || true
+          if git diff --cached --quiet; then echo "changed=no" >> "$GITHUB_OUTPUT"; exit 0; fi
+          phase=$(sed -n '/^## Current phase/{n;p}' docs/convex-migration-progress.md | head -1)
+          git commit -qm "convex-host: OpenCode run ${{ github.run_number }} (${phase:-unknown phase})"
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push origin HEAD:convex-host
+          echo "changed=yes" >> "$GITHUB_OUTPUT"
+
+      - name: Report on the issue
+        if: always() && steps.gate.outputs.run == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          . /tmp/verify.env 2>/dev/null || true
+          phase=$(sed -n '/^## Current phase/{n;p}' docs/convex-migration-progress.md | head -1)
+          {
+            echo "### OpenCode run ${{ github.run_number }} (${{ github.event_name }})"
+            echo "[Run log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) · current phase: **${phase:-?}** · changes pushed: ${{ steps.push.outputs.changed || 'no' }}"
+            echo
+            echo "| Check | Result |"; echo "|---|---|"
+            echo "| Typecheck | $([ "${TSC:-1}" = 0 ] && echo '✅ pass' || echo "❌ $(grep -c 'error TS' /tmp/tsc.txt 2>/dev/null) errors") |"
+            echo "| Lint | $([ "${LINT:-1}" = 0 ] && echo '✅ pass' || echo '⚠️ issues') |"
+            echo "| Tests | ${TESTS:-not run} |"
+            echo
+            if [ "${{ steps.push.outputs.changed }}" = yes ]; then echo "<details><summary>Files changed</summary>"; echo; echo '```'; git show --stat --format= HEAD | tail -40; echo '```'; echo "</details>"; fi
+            echo "<details><summary>OpenCode's last words</summary>"; echo; echo '```'; tail -c 2500 /tmp/opencode.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'; echo '```'; echo "</details>"
+          } > /tmp/report.md
+          gh issue comment "$ISSUE" --body-file /tmp/report.md
