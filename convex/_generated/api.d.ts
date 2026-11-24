@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as node_api from "../node/api.js";
 import type * as uploads from "../uploads.js";
 import type * as vfs from "../vfs.js";
 
@@ -18,8 +19,9 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  uploads: typeof uploads;
-  vfs: typeof vfs;
+	"node/api": typeof node_api;
+	uploads: typeof uploads;
+	vfs: typeof vfs;
 }>;
 
 /**
