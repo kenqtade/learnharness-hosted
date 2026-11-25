@@ -16,6 +16,13 @@ export async function register(): Promise<void> {
 		await storeReady(true);
 		const { initAuthEnv } = await import("./src/server/keys.ts");
 		initAuthEnv(); // saved keys → env, now that they've arrived
+		// RENDER / always-on hosts: flush queued Convex writes on SIGTERM
+		// (spin-down, redeploy). Vercel freezes functions instead.
+		if (!process.env.VERCEL && process.env.NEXT_MANUAL_SIG_HANDLE === "true") {
+			const { installShutdownFlush } = await import("./src/server/shutdown.ts");
+			const { flushStore } = await import("./src/store/vfs.ts");
+			installShutdownFlush(flushStore);
+		}
 	}
 	const { initializePlugins } = await import("./src/server/plugins.ts");
 	try { await initializePlugins(); }
