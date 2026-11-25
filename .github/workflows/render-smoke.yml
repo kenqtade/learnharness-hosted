@@ -49,10 +49,10 @@ jobs:
           npx next start -H 0.0.0.0 -p $PORT > /tmp/server.log 2>&1 &
           PID=$!
           peak=0
-          sample() { local kb; kb=$(ps -o rss= --ppid $PID -p $PID | awk '{s+=$1} END {print s+0}'); [ "$kb" -gt "$peak" ] && peak=$kb; }
+          sample() { local kb; kb=$(ps -eo rss=,args= | grep -E "next-server|next start" | grep -v grep | awk '{s+=$1} END {print s+0}'); if [ "$kb" -gt "$peak" ]; then peak=$kb; fi; return 0; }
           for i in $(seq 1 90); do sample; curl -fs -o /dev/null http://localhost:$PORT/api/version && break; sleep 1; done
           echo "ready after ${i}s"
-          sample; idle=$peak
+          sleep 5; sample; idle=$peak
           for round in 1 2 3; do
             for p in / /login /api/version /api/plugins /api/models /api/themes /chat/new; do
               code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT$p"); echo "$p $code"; sample
@@ -60,7 +60,7 @@ jobs:
           done
           sleep 3; sample
           echo "RSS after start: $((idle/1024)) MB, peak: $((peak/1024)) MB (limit 512 MB)"
-          kill -TERM $PID; sleep 3
+          pkill -TERM -f next-server || true; sleep 3
           tail -20 /tmp/server.log
           echo "### Render smoke: build ${BUILD_SECONDS}s, RSS idle $((idle/1024)) MB, peak $((peak/1024)) MB of 512 MB" >> "$GITHUB_STEP_SUMMARY"
           [ $((peak/1024)) -lt 480 ]
