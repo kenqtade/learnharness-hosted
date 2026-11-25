@@ -1,0 +1,66 @@
+# Builds the app exactly like render.yaml and checks it fits a Render free instance (512 MB).
+# Runs on pushes to render-host (and on demand once this file is on the default branch).
+name: Render smoke test
+
+on:
+  push:
+    branches: [render-host]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Build (same command as render.yaml)
+        run: |
+          start=$(date +%s)
+          npm ci --include=dev --no-audit --no-fund && npm run plugins:setup && npx next build
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+      - name: Typecheck and new tests
+        run: |
+          npx tsc --noEmit
+          NODE_ENV=test npx tsx --test tests/render-keep-awake.test.ts
+      - name: Start like Render and measure memory
+        env:
+          NODE_OPTIONS: --max-old-space-size=400
+          NEXT_MANUAL_SIG_HANDLE: "true"
+          LH_PROFILE: hosted
+          LH_PLUGINS: "1"
+          LH_DATA_DIR: /tmp/lh-data
+          LH_AUTH_FILE: /tmp/lh-data/auth.json
+          LH_SESSION_SECRET: smoke-test-session-secret-0123456789abcdef
+          LH_OWNER_SETUP_CODE: smoke-setup
+          PORT: "10000"
+        run: |
+          mkdir -p /tmp/lh-data
+          npx next start -H 0.0.0.0 -p $PORT > /tmp/server.log 2>&1 &
+          PID=$!
+          peak=0
+          sample() { local kb; kb=$(ps -o rss= --ppid $PID -p $PID | awk '{s+=$1} END {print s+0}'); [ "$kb" -gt "$peak" ] && peak=$kb; }
+          for i in $(seq 1 90); do sample; curl -fs -o /dev/null http://localhost:$PORT/api/version && break; sleep 1; done
+          echo "ready after ${i}s"
+          sample; idle=$peak
+          for round in 1 2 3; do
+            for p in / /login /api/version /api/plugins /api/models /api/themes /chat/new; do
+              code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT$p"); echo "$p $code"; sample
+            done
+          done
+          sleep 3; sample
+          echo "RSS after start: $((idle/1024)) MB, peak: $((peak/1024)) MB (limit 512 MB)"
+          kill -TERM $PID; sleep 3
+          tail -20 /tmp/server.log
+          echo "### Render smoke: build ${BUILD_SECONDS}s, RSS idle $((idle/1024)) MB, peak $((peak/1024)) MB of 512 MB" >> "$GITHUB_STEP_SUMMARY"
+          [ $((peak/1024)) -lt 480 ]

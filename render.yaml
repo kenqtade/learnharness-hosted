@@ -1,0 +1,98 @@
+# Render Blueprint: LearnHarness on Render's free web services (see docs/render-hosting.md).
+# Data lives in Convex, so nothing is lost when a free service sleeps or restarts.
+# Secrets are marked `sync: false`: Render asks for them when the Blueprint is created.
+previews:
+  generation: off
+
+services:
+  # Production: the `hosted` branch, data in prod Convex.
+  - type: web
+    name: learnharness
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: hosted
+    autoDeployTrigger: commit
+    buildCommand: npm ci --include=dev --no-audit --no-fund && npm run plugins:setup && npx next build
+    startCommand: npx next start -H 0.0.0.0 -p $PORT
+    healthCheckPath: /api/version
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Free instances have 512 MB. Leave room for native memory and buffers.
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=400
+      # Let the app (not Next) handle SIGTERM, so queued Convex writes are flushed on spin-down.
+      - key: NEXT_MANUAL_SIG_HANDLE
+        value: "true"
+      - key: LH_STORE
+        value: convex
+      - key: LH_PROFILE
+        value: hosted
+      - key: LH_DATA_DIR
+        value: /tmp/lh-data
+      - key: LH_AUTH_FILE
+        value: /tmp/lh-data/auth.json
+      - key: LH_MODEL_TIMEOUT_MS
+        value: "100000"
+      - key: ELECTRON_SKIP_BINARY_DOWNLOAD
+        value: "1"
+      - key: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+        value: "1"
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      - key: CONVEX_URL
+        sync: false
+      - key: LH_CONVEX_SECRET
+        sync: false
+      - key: LH_SESSION_SECRET
+        sync: false
+      - key: LH_OWNER_SETUP_CODE
+        sync: false
+      - key: CRON_SECRET
+        sync: false
+
+  # Plugins preview: the `feat/core-plugins` branch, data in the dev/staging Convex.
+  - type: web
+    name: learnharness-plugins
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: feat/core-plugins
+    autoDeployTrigger: commit
+    buildCommand: npm ci --include=dev --no-audit --no-fund && npm run plugins:setup && npx next build
+    startCommand: npx next start -H 0.0.0.0 -p $PORT
+    healthCheckPath: /api/version
+    envVars:
+      - key: LH_PLUGINS
+        value: "1"
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=400
+      - key: NEXT_MANUAL_SIG_HANDLE
+        value: "true"
+      - key: LH_STORE
+        value: convex
+      - key: LH_PROFILE
+        value: hosted
+      - key: LH_DATA_DIR
+        value: /tmp/lh-data
+      - key: LH_AUTH_FILE
+        value: /tmp/lh-data/auth.json
+      - key: LH_MODEL_TIMEOUT_MS
+        value: "100000"
+      - key: ELECTRON_SKIP_BINARY_DOWNLOAD
+        value: "1"
+      - key: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+        value: "1"
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      - key: CONVEX_URL
+        sync: false
+      - key: LH_CONVEX_SECRET
+        sync: false
+      - key: LH_SESSION_SECRET
+        sync: false
+      - key: CRON_SECRET
+        sync: false
